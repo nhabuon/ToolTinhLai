@@ -1,149 +1,159 @@
 # ==========================================
-# TOOL QUẢN TRỊ SHOPEE - BCM VERSION 3.2 (FULL SYSTEM)
-# Coder: BCM-Engineer & Sếp Lâm
-# Tính năng: Tính lãi + Kho Cloud + AI + Radar Đối Thủ (Phân tích thị trường)
+# TOOL QUẢN TRỊ SHOPEE - BCM VERSION 3.5 (FINAL)
+# Coder: BCM-Engineer (An) & Sếp Lâm
+# Engine: Gemini 3 Pro Preview
+# Tính năng: Dual Persona (An & Sư), Radar, Báo cáo Excel, Kho Offline
 # ==========================================
 
 import streamlit as st
+import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 from google import genai
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 import time
+import os
 
-# --- 1. CẤU HÌNH HỆ THỐNG ---
+# ==================================================
+# ⚙️ KHU VỰC CẤU HÌNH CỨNG
+# ==================================================
+# 1. API Key: Sếp dán Key vào giữa 2 dấu ngoặc kép bên dưới để dùng luôn
+MY_API_KEY = "" 
+
+# 2. Cấu hình File
+DB_FILE = "shopee_data_v3.db"            # Database nội bộ
+REPORT_FILE = "BAO_CAO_KINH_DOANH.xlsx"  # File xuất báo cáo
+
+# 3. Model AI (Mới nhất 2026)
 AI_MODEL_ID = 'gemini-3-pro-preview' 
-SHEET_NAME = "bcm_database" 
 
-# --- 2. KẾT NỐI GOOGLE SHEETS (CLOUD DATABASE) ---
-@st.cache_resource
-def connect_to_sheets():
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    
-    # Ưu tiên lấy từ Secrets (khi chạy trên Web)
-    try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    except:
-        # Nếu lỗi, thử tìm file json trên máy (khi chạy local)
-        try:
-            creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
-        except:
-            return None
+# ==================================================
 
-    client = gspread.authorize(creds)
-    try:
-        return client.open(SHEET_NAME)
-    except:
-        return None
-
-# --- 3. KHỞI TẠO DATABASE (AUTO TẠO SHEET NẾU CHƯA CÓ) ---
+# --- 1. KHỞI TẠO DATABASE (SQLITE) ---
 def init_db():
-    sh = connect_to_sheets()
-    if sh:
-        # Tab 1: Sản phẩm (products)
-        try: wks_prod = sh.worksheet("products")
-        except: wks_prod = sh.add_worksheet(title="products", rows=100, cols=20)
-        if not wks_prod.row_values(1): 
-            wks_prod.append_row(["id", "name", "cost_price", "selling_price", "stock_quantity", "alert_threshold", "daily_sales", "lead_time", "safety_stock"])
-
-        # Tab 2: Tài chính (financials)
-        try: wks_fin = sh.worksheet("financials")
-        except: wks_fin = sh.add_worksheet(title="financials", rows=100, cols=10)
-        if not wks_fin.row_values(1): 
-            wks_fin.append_row(["date", "revenue", "ad_spend", "profit"])
-        
-        # Tab 3: Đối thủ (competitors)
-        try: wks_comp = sh.worksheet("competitors")
-        except: wks_comp = sh.add_worksheet(title="competitors", rows=100, cols=10)
-        if not wks_comp.row_values(1): 
-            wks_comp.append_row(["comp_id", "my_product_name", "comp_name", "comp_url", "comp_price", "last_check"])
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    # Bảng Sản Phẩm
+    c.execute('''CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT,
+                    cost_price INTEGER,
+                    selling_price INTEGER,
+                    stock_quantity INTEGER DEFAULT 0,
+                    alert_threshold INTEGER DEFAULT 5,
+                    daily_sales REAL DEFAULT 1.0,
+                    lead_time INTEGER DEFAULT 15,
+                    safety_stock INTEGER DEFAULT 5
+                )''')
+    # Bảng Tài Chính
+    c.execute('''CREATE TABLE IF NOT EXISTS financials (
+                    date TEXT PRIMARY KEY,
+                    revenue INTEGER DEFAULT 0,
+                    ad_spend INTEGER DEFAULT 0,
+                    profit INTEGER DEFAULT 0
+                )''')
+    # Bảng Đối Thủ (Radar)
+    c.execute('''CREATE TABLE IF NOT EXISTS competitors (
+                    comp_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    my_product_name TEXT,
+                    comp_name TEXT,
+                    comp_url TEXT,
+                    comp_price INTEGER,
+                    last_check TEXT
+                )''')
+    conn.commit()
+    conn.close()
 
 init_db()
 
-# --- 4. CÁC HÀM XỬ LÝ DỮ LIỆU ---
+# --- 2. CÁC HÀM XỬ LÝ DỮ LIỆU ---
 
-# --- Nhóm Hàm Sản Phẩm & Kho ---
-def get_data_frame():
-    sh = connect_to_sheets()
-    if not sh: return pd.DataFrame()
-    return pd.DataFrame(sh.worksheet("products").get_all_records())
+def get_products_df():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM products", conn)
+    conn.close()
+    return df
 
 def get_products_list():
-    df = get_data_frame()
+    df = get_products_df()
     return df['name'].tolist() if not df.empty else []
 
 def get_my_price(product_name):
-    sh = connect_to_sheets()
-    try:
-        cell = sh.worksheet("products").find(product_name)
-        # Giá bán ở cột 4 (D)
-        return int(sh.worksheet("products").cell(cell.row, 4).value)
-    except: return 0
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT selling_price FROM products WHERE name = ?", (product_name,))
+    res = c.fetchone()
+    conn.close()
+    return res[0] if res else 0
 
-def add_product_to_db(name, cost, price, daily_sales, lead_time, safety):
-    sh = connect_to_sheets()
-    wks = sh.worksheet("products")
-    new_id = len(wks.get_all_values())
-    threshold = int(daily_sales * lead_time + safety)
-    wks.append_row([new_id, name, cost, price, 0, threshold, daily_sales, lead_time, safety])
+def add_product(name, cost, price, daily, lead, safe):
+    threshold = int(daily * lead + safe)
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""INSERT INTO products (name, cost_price, selling_price, daily_sales, lead_time, safety_stock, alert_threshold) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?)""", (name, cost, price, daily, lead, safe, threshold))
+    conn.commit()
+    conn.close()
 
-def update_stock(product_id, amount):
-    sh = connect_to_sheets()
-    wks = sh.worksheet("products")
-    cell = wks.find(str(product_id), in_column=1)
-    if cell:
-        cur = int(wks.cell(cell.row, 5).value)
-        wks.update_cell(cell.row, 5, cur + amount)
+def update_stock(pid, amount):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?", (amount, pid))
+    conn.commit()
+    conn.close()
 
-# --- Nhóm Hàm Radar Đối Thủ ---
 def add_competitor(my_prod, comp_name, url, price):
-    sh = connect_to_sheets()
-    wks = sh.worksheet("competitors")
-    new_id = len(wks.get_all_values())
-    wks.append_row([new_id, my_prod, comp_name, url, price, datetime.now().strftime("%Y-%m-%d")])
+    date_now = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("INSERT INTO competitors (my_product_name, comp_name, comp_url, comp_price, last_check) VALUES (?, ?, ?, ?, ?)",
+              (my_prod, comp_name, url, price, date_now))
+    conn.commit()
+    conn.close()
 
 def get_competitors_df():
-    sh = connect_to_sheets()
-    if not sh: return pd.DataFrame()
-    return pd.DataFrame(sh.worksheet("competitors").get_all_records())
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM competitors", conn)
+    conn.close()
+    return df
 
-def update_competitor_price(comp_id, new_price):
-    sh = connect_to_sheets()
-    wks = sh.worksheet("competitors")
-    cell = wks.find(str(comp_id), in_column=1)
-    if cell:
-        wks.update_cell(cell.row, 5, new_price)
-        wks.update_cell(cell.row, 6, datetime.now().strftime("%Y-%m-%d"))
+def update_comp_price(comp_id, new_price):
+    date_now = datetime.now().strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("UPDATE competitors SET comp_price = ?, last_check = ? WHERE comp_id = ?", (new_price, date_now, comp_id))
+    conn.commit()
+    conn.close()
 
-# --- Nhóm Hàm Tài Chính ---
-def get_weekly_metrics(selected_date):
-    start_date = (selected_date - timedelta(days=selected_date.weekday())).strftime("%Y-%m-%d")
-    sh = connect_to_sheets()
-    wks = sh.worksheet("financials")
-    try:
-        cell = wks.find(start_date, in_column=1)
-        if cell:
-            vals = wks.row_values(cell.row)
-            return (int(vals[1]), int(vals[2]), int(vals[3]))
-    except: pass
-    return (0, 0, 0)
-
-def save_weekly_metrics(selected_date, revenue, ads, profit):
-    start_date = (selected_date - timedelta(days=selected_date.weekday())).strftime("%Y-%m-%d")
-    sh = connect_to_sheets()
-    wks = sh.worksheet("financials")
-    try:
-        cell = wks.find(start_date, in_column=1)
-        if cell:
-            wks.update_cell(cell.row, 2, revenue)
-            wks.update_cell(cell.row, 3, ads)
-            wks.update_cell(cell.row, 4, profit)
-        else:
-            wks.append_row([start_date, revenue, ads, profit])
-    except:
-        wks.append_row([start_date, revenue, ads, profit])
+def save_report_to_excel(date_obj, rev, ads, prof):
+    # Lưu vào DB
+    start_date = (date_obj - timedelta(days=date_obj.weekday())).strftime("%Y-%m-%d")
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("REPLACE INTO financials (date, revenue, ad_spend, profit) VALUES (?, ?, ?, ?)", (start_date, rev, ads, prof))
+    conn.commit()
+    conn.close()
+    
+    # Lưu ra Excel
+    data = {
+        'Ngày Báo Cáo': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
+        'Tuần Kinh Doanh': [start_date],
+        'Doanh Thu': [rev],
+        'Chi Phí Ads': [ads],
+        'Lợi Nhuận': [prof]
+    }
+    df_new = pd.DataFrame(data)
+    
+    if os.path.exists(REPORT_FILE):
+        with pd.ExcelWriter(REPORT_FILE, mode='a', engine='openpyxl', if_sheet_exists='overlay') as writer:
+            try:
+                writer.book = pd.read_excel(REPORT_FILE)
+                start_row = writer.sheets['Sheet1'].max_row
+                df_new.to_excel(writer, index=False, header=False, startrow=start_row)
+            except:
+                 df_new.to_excel(REPORT_FILE, index=False)
+    else:
+        df_new.to_excel(REPORT_FILE, index=False)
+    return REPORT_FILE
 
 def process_shopee_files(revenue_file, ads_file):
     total_revenue = 0; total_ads = 0
@@ -161,148 +171,166 @@ def process_shopee_files(revenue_file, ads_file):
         except: pass
     return total_revenue, total_ads
 
-
-# --- 5. GIAO DIỆN CHÍNH (STREAMLIT UI) ---
-st.set_page_config(page_title="BCM System v3.2", page_icon="🦅", layout="wide")
+# --- 3. GIAO DIỆN CHÍNH (STREAMLIT UI) ---
+st.set_page_config(page_title="BCM v3.5 Dual Core", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # SIDEBAR
-st.sidebar.title("BCM v3.2 (Radar)")
-api_key = st.sidebar.text_input("🔑 Google AI Key:", type="password")
+st.sidebar.title("BCM v3.5 (Gemini 3)")
+st.sidebar.caption(f"Engine: {AI_MODEL_ID}")
+
 client = None
+if MY_API_KEY: api_key = MY_API_KEY
+else: api_key = st.sidebar.text_input("Nhập Key AI:", type="password")
+
 if api_key:
     try: client = genai.Client(api_key=api_key); st.sidebar.success("AI Online 🟢")
     except: pass
 
-menu = st.sidebar.radio("Menu:", ["⚔️ Rada & Thị Trường", "💰 Tính Lãi & Thêm Mới", "📊 Báo Cáo Tuần", "🤖 Trợ Lý AI", "📦 Kho Hàng"])
+menu = st.sidebar.radio("Menu:", ["🤖 Phòng Họp Chiến Lược (Dual)", "📊 Báo Cáo & Xuất Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"])
 
-# ================= TAB 1: RADA ĐỐI THỦ (ĐÃ NÂNG CẤP) =================
-if menu == "⚔️ Rada & Thị Trường":
-    st.title("⚔️ PHÂN TÍCH THỊ TRƯỜNG & ĐỐI THỦ")
-    
-    # Khu vực thêm đối thủ
-    with st.expander("➕ Thêm Đối Thủ Mới (Nhập đủ 5 ông)", expanded=False):
+# ================= TAB 1: PHÒNG HỌP CHIẾN LƯỢC (ĐA NHÂN CÁCH) =================
+if menu == "🤖 Phòng Họp Chiến Lược (Dual)":
+    st.title("🤖 PHÒNG HỌP CHIẾN LƯỢC")
+    st.caption("Tham vấn ý kiến của các nhân sự AI cốt cán.")
+
+    if not client:
+        st.error("⚠️ Vui lòng nhập API Key để triệu tập nhân viên.")
+    else:
+        # CHỌN NHÂN SỰ
+        col_nv, col_chat = st.columns([1, 3])
+        
+        with col_nv:
+            st.subheader("Chọn Người Tư Vấn:")
+            nhan_vien = st.radio(
+                "Nhân sự:",
+                ["An (Kỹ sư BCM)", "Sư (Cố vấn Khắt khe)"],
+                captions=["Hỗ trợ, kỹ thuật, giải pháp.", "Phản biện, soi mói, đa nghi."]
+            )
+            
+            if "An" in nhan_vien:
+                st.info("🔵 **An:**\n- Nhiệt tình, Support.\n- Giỏi tính toán, Code.\n- Luôn tìm giải pháp.")
+            else:
+                st.error("🔴 **Sư:**\n- Khó tính, hay nghi ngờ.\n- Đóng vai Đối thủ/Khách khó tính.\n- Chuyên tìm lỗi & rủi ro.")
+
+        with col_chat:
+            # Lấy context dữ liệu
+            df_comp = get_competitors_df()
+            context_info = ""
+            if not df_comp.empty:
+                context_info = f"Dữ liệu thị trường hiện tại (Đối thủ):\n{df_comp.to_string()}\n"
+            
+            st.subheader(f"💬 Đang trao đổi với: {nhan_vien.split(' ')[0]}")
+            user_input = st.text_area("Sếp muốn hỏi gì?", height=100, placeholder="VD: Chiến lược giá này ổn không? Content này đã hay chưa?")
+            
+            if st.button("Hỏi ngay 🚀"):
+                if not user_input:
+                    st.warning("Sếp chưa nhập câu hỏi...")
+                else:
+                    with st.spinner(f"{nhan_vien.split(' ')[0]} đang suy nghĩ..."):
+                        # --- THIẾT LẬP PROMPT ---
+                        if "An" in nhan_vien:
+                            system_prompt = f"""
+                            Bạn là An, Kỹ sư BCM nhiệt huyết, trợ lý của Sếp Lâm.
+                            Tính cách: Nhanh nhẹn, lạc quan, tập trung vào giải pháp (Solution-oriented).
+                            Nhiệm vụ: Dùng dữ liệu sau để trả lời Sếp một cách xây dựng:
+                            {context_info}
+                            Câu hỏi: {user_input}
+                            """
+                        else:
+                            system_prompt = f"""
+                            Bạn là 'Sư' (Advisor) - Cố vấn chiến lược cực kỳ khó tính, đa nghi và cay nghiệt.
+                            Tuyệt đối KHÔNG khen xã giao.
+                            Nhiệm vụ:
+                            1. Đóng vai Khách hàng khó tính bắt bẻ sản phẩm.
+                            2. Hoặc đóng vai Đối thủ cạnh tranh tìm cách dìm hàng.
+                            3. Chỉ ra LỖ HỔNG (Loophole), RỦI RO (Risk) mà Sếp Lâm đang ảo tưởng.
+                            Dữ liệu thị trường:
+                            {context_info}
+                            Câu hỏi (hãy soi mói câu này): {user_input}
+                            """
+                        
+                        try:
+                            response = client.models.generate_content(
+                                model=AI_MODEL_ID,
+                                contents=system_prompt
+                            )
+                            if "An" in nhan_vien:
+                                st.success(response.text)
+                            else:
+                                st.warning(response.text) 
+                        except Exception as e:
+                            st.error(f"Lỗi AI: {e}")
+
+# ================= TAB 2: BÁO CÁO =================
+elif menu == "📊 Báo Cáo & Xuất Excel":
+    st.title("📊 BÁO CÁO KINH DOANH")
+    st.caption(f"File lưu tại: **{REPORT_FILE}**")
+    d = st.date_input("Chọn tuần:", datetime.now())
+    with st.expander("Upload File"):
+        f1=st.file_uploader("Doanh Thu"); f2=st.file_uploader("Ads")
+        arev, aads = process_shopee_files(f1, f2)
+    st.divider()
+    c1, c2, c3 = st.columns(3)
+    nr = c1.number_input("Doanh thu", float(arev) if arev else 0.0, step=1e5, format="%.0f")
+    na = c2.number_input("Chi phí Ads", float(aads) if aads else 0.0, step=5e4, format="%.0f")
+    np = c3.number_input("Lợi nhuận Ròng", float(nr*0.3-na), step=5e4, format="%.0f")
+    if st.button("💾 LƯU & XUẤT EXCEL", type="primary"):
+        fp = save_report_to_excel(d, nr, na, np)
+        st.success(f"✅ Đã xuất báo cáo: {fp}")
+
+# ================= TAB 3: RADA =================
+elif menu == "⚔️ Rada Đối Thủ":
+    st.title("⚔️ RADA ĐỐI THỦ")
+    with st.expander("➕ Thêm Đối Thủ"):
         my_prods = get_products_list()
-        if not my_prods: st.warning("Kho trống! Vào tab 'Tính Lãi' tạo SP trước.")
+        if not my_prods: st.warning("Kho trống!")
         else:
             c1, c2 = st.columns(2)
-            with c1:
-                p_me = st.selectbox("Sản phẩm mình:", my_prods)
-                p_shop = st.text_input("Tên Shop họ:")
-            with c2:
-                p_link = st.text_input("Link Shopee:")
-                p_price = st.number_input("Giá họ bán:", step=1000)
-            if st.button("Lưu Rada"):
-                add_competitor(p_me, p_shop, p_link, p_price)
-                st.success("Đã lưu!"); time.sleep(1); st.rerun()
+            with c1: p_me = st.selectbox("SP Mình", my_prods); p_shop = st.text_input("Tên Shop")
+            with c2: p_link = st.text_input("Link"); p_price = st.number_input("Giá", step=1000)
+            if st.button("Lưu"): add_competitor(p_me, p_shop, p_link, p_price); st.rerun()
     
-    # Khu vực phân tích
     df_comp = get_competitors_df()
     if not df_comp.empty:
-        u_prods = df_comp['my_product_name'].unique()
-        view_prod = st.selectbox("🔍 Chọn sản phẩm để soi:", u_prods)
-        df_view = df_comp[df_comp['my_product_name'] == view_prod]
-        
+        prod = st.selectbox("🔍 Soi SP:", df_comp['my_product_name'].unique())
+        df_view = df_comp[df_comp['my_product_name'] == prod]
         if not df_view.empty:
-            prices = df_view['comp_price'].tolist()
-            my_price = get_my_price(view_prod)
-            
-            # Tính toán Min-Max-Avg
-            min_p, max_p = min(prices), max(prices)
-            avg_p = sum(prices)/len(prices)
-            
-            st.divider()
-            st.subheader(f"📊 Thị Trường: {view_prod}")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Giá Đáy (Min)", f"{min_p:,.0f}")
-            m2.metric("Giá Trung Bình", f"{avg_p:,.0f}")
-            m3.metric("Giá Trần (Max)", f"{max_p:,.0f}")
-            
-            delta = my_price - avg_p
-            pct = (delta/avg_p*100) if avg_p>0 else 0
-            if delta > 0: m4.metric("GIÁ CỦA SẾP", f"{my_price:,.0f}", f"Cao hơn {pct:.1f}% 🔴", delta_color="inverse")
-            else: m4.metric("GIÁ CỦA SẾP", f"{my_price:,.0f}", f"Thấp hơn {abs(pct):.1f}% 🟢", delta_color="normal")
-            
-            if len(prices) < 5: st.warning(f"⚠️ Mới có {len(prices)} đối thủ. Cần thêm {5-len(prices)} nữa để AI tính chuẩn.")
-            
+            prices = df_view['comp_price'].tolist(); my_p = get_my_price(prod); avg_p = sum(prices)/len(prices)
+            st.divider(); m1, m2, m3 = st.columns(3)
+            m1.metric("Min", f"{min(prices):,.0f}"); m2.metric("Avg", f"{avg_p:,.0f}"); m3.metric("Max", f"{max(prices):,.0f}")
+            delta = my_p - avg_p
+            if delta>0: st.metric("GIÁ SẾP", f"{my_p:,.0f}", f"Cao hơn {delta/avg_p*100:.1f}% 🔴", delta_color="inverse")
+            else: st.metric("GIÁ SẾP", f"{my_p:,.0f}", f"Thấp hơn {abs(delta/avg_p*100):.1f}% 🟢", delta_color="normal")
             st.write("---")
             for idx, row in df_view.iterrows():
-                diff = my_price - row['comp_price']
-                pc = (diff/my_price*100) if my_price>0 else 0
                 with st.container(border=True):
-                    c1, c2, c3, c4 = st.columns([3, 2, 2, 1])
-                    with c1: st.write(f"**{row['comp_name']}**"); st.caption(row['comp_url'])
-                    with c2: st.metric("Giá Họ", f"{row['comp_price']:,.0f}")
-                    with c3: 
-                        if diff>0: st.metric("So với Sếp", "Rẻ hơn", f"{pc:.1f}%", delta_color="normal")
-                        else: st.metric("So với Sếp", "Đắt hơn", f"{abs(pc):.1f}%", delta_color="inverse")
-                    with c4:
-                        np = st.number_input("Update giá", value=row['comp_price'], key=f"p_{row['comp_id']}", label_visibility="collapsed")
-                        if st.button("Lưu", key=f"b_{row['comp_id']}"):
-                            update_competitor_price(row['comp_id'], np); st.rerun()
+                    c1, c2, c3 = st.columns([3, 2, 2])
+                    c1.write(f"**{row['comp_name']}**"); c2.metric("Giá", f"{row['comp_price']:,.0f}")
+                    np = c3.number_input("Sửa", value=row['comp_price'], key=row['comp_id'], label_visibility="collapsed")
+                    if c3.button("Lưu", key=f"b_{row['comp_id']}"): update_comp_price(row['comp_id'], np); st.rerun()
 
-# ================= TAB 2: TÍNH LÃI (CORE) =================
+# ================= TAB 4: TÍNH LÃI =================
 elif menu == "💰 Tính Lãi & Thêm Mới":
     st.title("💰 CÔNG CỤ TÍNH LÃI")
-    with st.container(border=True):
-        c1, c2, c3 = st.columns(3)
-        with c1: ten=st.text_input("Tên SP"); von=st.number_input("Giá Vốn", step=1000)
-        with c2: ban=st.number_input("Giá Bán", step=1000); hop=st.number_input("Phí đóng gói", value=2000)
-        with c3: daily=st.number_input("Bán/ngày", value=1.0); lead=st.number_input("Ngày ship", 15); safe=st.number_input("Safety Stock", 5)
-        san = st.slider("Phí sàn %", 0, 25, 16)
-        if st.button("🚀 TÍNH & LƯU"):
-            lai = ban*(1-san/100) - von - hop
-            rop = int(daily*lead + safe)
-            st.divider()
-            k1, k2 = st.columns(2)
-            k1.metric("LÃI RÒNG", f"{lai:,.0f} đ", delta_color="normal" if lai>0 else "inverse")
-            k2.metric("ĐIỂM NHẬP HÀNG", f"{rop} cái")
-            if lai>0:
-                add_product_to_db(ten, von, ban, daily, lead, safe)
-                st.success("Đã lưu vào Cloud!")
-
-# ================= TAB 3: BÁO CÁO =================
-elif menu == "📊 Báo Cáo Tuần":
-    st.title("📊 TRUNG TÂM CHỈ HUY")
-    d = st.date_input("Chọn tuần", datetime.now())
-    rev, ads, prof = get_weekly_metrics(d)
-    with st.expander("Upload Excel Shopee"):
-        f1=st.file_uploader("File Doanh Thu"); f2=st.file_uploader("File Ads")
-        arev, aads = process_shopee_files(f1, f2)
-    
-    fr = arev if arev>0 else rev
-    fa = aads if aads>0 else ads
-    
     c1, c2, c3 = st.columns(3)
-    nr = c1.number_input("Doanh thu", float(fr))
-    na = c2.number_input("Chi phí Ads", float(fa))
-    np = c3.number_input("Lợi nhuận", float(prof))
-    if st.button("💾 LƯU BÁO CÁO"):
-        save_weekly_metrics(d, nr, na, np)
-        st.success("Đã đồng bộ Google Sheets!")
-
-# ================= TAB 4: AI ASSISTANT =================
-elif menu == "🤖 Trợ Lý AI":
-    st.title("🤖 GEMINI STRATEGIST")
-    if not client: st.error("Chưa nhập Key")
-    else:
-        df_c = get_competitors_df()
-        info = df_c.to_string() if not df_c.empty else "Chưa có dữ liệu đối thủ."
-        if st.button("Phân tích chiến lược giá"):
-            with st.spinner("Gemini đang soi..."):
-                prompt = f"Phân tích bảng giá đối thủ: {info}. Cho lời khuyên định giá."
-                res = client.models.generate_content(model=AI_MODEL_ID, contents=prompt)
-                st.write(res.text)
+    with c1: ten=st.text_input("Tên SP"); von=st.number_input("Giá Vốn", step=1000)
+    with c2: ban=st.number_input("Giá Bán", step=1000); hop=st.number_input("Phí gói", 2000)
+    with c3: daily=st.number_input("Bán/ngày", 1.0); lead=st.number_input("Ngày ship", 15); safe=st.number_input("Safety", 5)
+    san = st.slider("Phí sàn %", 0, 25, 16)
+    if st.button("🚀 TÍNH & LƯU"):
+        lai = ban*(1-san/100) - von - hop
+        rop = int(daily*lead + safe)
+        st.metric("LÃI RÒNG", f"{lai:,.0f} đ", f"Nhập khi còn: {rop} cái")
+        if lai>0: add_product(ten, von, ban, daily, lead, safe); st.success("Đã lưu!")
 
 # ================= TAB 5: KHO HÀNG =================
 elif menu == "📦 Kho Hàng":
-    st.title("📦 KHO ONLINE")
-    df = get_data_frame()
+    st.title("📦 KHO HÀNG")
+    df = get_products_df()
     if not df.empty:
-        st.dataframe(df[['name','selling_price','stock_quantity','alert_threshold']])
-        with st.form("stk"):
+        st.dataframe(df)
+        with st.form("kho"):
             pid = st.selectbox("Chọn SP", df['id'], format_func=lambda x: df[df['id']==x]['name'].values[0])
-            qty = st.number_input("Nhập/Xuất (+/-)", step=1)
-            if st.form_submit_button("Cập nhật kho"):
-                update_stock(pid, qty); st.rerun()
-    else: st.warning("Kho trống")
+            qty = st.number_input("Nhập/Xuất", step=1)
+            if st.form_submit_button("Cập nhật"): update_stock(pid, qty); st.rerun()
