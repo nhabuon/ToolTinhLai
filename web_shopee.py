@@ -1,7 +1,9 @@
 # ==============================================================================
-# BCM CLOUD v4.2 - SNIPER MODE (TARGETED DATA EXTRACTION)
+# BCM CLOUD v4.3 - SMART COLUMN SELECTOR (FIX WRONG COLUMN)
 # Coder: BCM-Engineer (An) & Sếp Lâm
-# Update: Đọc trực tiếp dòng tổng (Doanh thu) và bỏ qua Header thừa (Ads)
+# Update:
+# 1. Ads: Loại trừ cột "Chi phí chuyển đổi", chỉ lấy "Chi phí".
+# 2. Doanh thu: Đọc dạng Text để không bị làm tròn số.
 # ==============================================================================
 
 import streamlit as st
@@ -18,7 +20,7 @@ import io
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.2 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.3 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -78,115 +80,112 @@ def get_file_content(uploaded_file):
     return text
 
 # ==================================================
-# 3. TRÁI TIM XỬ LÝ SỐ LIỆU (ĐÃ FIX CHUẨN SHOPEE VN)
+# 3. TRÁI TIM XỬ LÝ SỐ LIỆU (SMART SELECTOR)
 # ==================================================
 
 def parse_vn_currency(val):
-    """
-    Chuyển đổi chuỗi tiền Việt thành số.
-    Ví dụ: "14.267.984" -> 14267984.0
-    Ví dụ: "117.611,96" -> 117611.96
-    """
+    """Chuyển chuỗi tiền Việt thành số thực."""
     if pd.isna(val): return 0
     s = str(val).strip()
+    s = re.sub(r'[^\d.,]', '', s) # Chỉ giữ số, chấm, phẩy
     
-    # Nếu là số sẵn rồi thì trả về luôn
-    if isinstance(val, (int, float)): return float(val)
-
-    # 1. Xóa hết các ký tự không phải số, dấu chấm, dấu phẩy
-    s = re.sub(r'[^\d.,]', '', s)
-    
-    # 2. Xử lý dấu phân cách
-    # Shopee VN: Chấm (.) là hàng nghìn, Phẩy (,) là thập phân
-    if '.' in s and ',' in s: 
-        # Ví dụ: 1.200,50 -> Xóa chấm, thay phẩy bằng chấm
-        s = s.replace('.', '').replace(',', '.')
+    # Logic: Chấm là nghìn, Phẩy là thập phân (Chuẩn VN)
+    if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
     elif '.' in s:
-        # Ví dụ: 14.267.984 -> Xóa chấm
-        # Ví dụ hiếm: 12.5 (12 phẩy 5) -> Nếu 3 số sau chấm thì nghi là nghìn
         parts = s.split('.')
-        if len(parts) > 1 and len(parts[-1]) == 3:
+        # Nếu có nhiều chấm hoặc 3 số sau chấm -> Là hàng nghìn -> Xóa chấm
+        if len(parts) > 1 and (len(parts) > 2 or len(parts[-1]) == 3): 
             s = s.replace('.', '')
-        # Nếu không thì giữ nguyên (coi như số thập phân chuẩn Mỹ)
-    elif ',' in s:
-        # Ví dụ: 123,45 -> Thay phẩy bằng chấm
-        s = s.replace(',', '.')
+    elif ',' in s: s = s.replace(',', '.')
 
     try: return float(s)
     except: return 0.0
 
-def process_shopee_files(revenue_file, ads_file):
-    total_rev = 0
-    total_ads = 0
-    logs = []
+def find_best_column(columns, keywords, blacklist=[]):
+    """
+    Tìm cột đúng nhất:
+    1. Ưu tiên khớp chính xác (Exact match).
+    2. Nếu không, tìm chứa từ khóa (Contains) NHƯNG KHÔNG chứa từ cấm (Blacklist).
+    """
+    cols_lower = [str(c).lower().strip() for c in columns]
+    
+    # 1. Tìm chính xác
+    for kw in keywords:
+        if kw in cols_lower:
+            return columns[cols_lower.index(kw)]
+            
+    # 2. Tìm chứa từ khóa (nhưng không chứa từ cấm)
+    for col in columns:
+        c_low = str(col).lower()
+        # Phải chứa ít nhất 1 keyword
+        if not any(k in c_low for k in keywords): continue
+        # VÀ không được chứa từ cấm nào
+        if any(b in c_low for b in blacklist): continue
+        
+        return col # Tìm thấy cột hợp lệ đầu tiên
+        
+    return None
 
-    # --- XỬ LÝ DOANH THU (SHOP STATS) ---
+def process_shopee_files(revenue_file, ads_file):
+    total_rev = 0; total_ads = 0; logs = []
+
+    # --- XỬ LÝ DOANH THU ---
     if revenue_file:
         try:
-            # Shop Stats thường có Header ở dòng 1 (index 0)
-            # Dòng 2 (index 1) là dòng TỔNG CỘNG -> Lấy luôn dòng này!
-            df = pd.read_csv(revenue_file, header=0, encoding='utf-8')
+            # Đọc tất cả là String (dtype=str) để không bị lỗi làm tròn
+            revenue_file.seek(0)
+            if revenue_file.name.endswith(('xls', 'xlsx')):
+                df = pd.read_excel(revenue_file, header=0, dtype=str)
+            else:
+                df = pd.read_csv(revenue_file, header=0, dtype=str, encoding='utf-8')
         except:
-            try:
-                revenue_file.seek(0)
-                df = pd.read_excel(revenue_file, header=0)
-            except:
-                logs.append("❌ Không đọc được file Doanh thu (Lỗi Format)")
-                df = pd.DataFrame()
+            logs.append("❌ Lỗi đọc file Doanh thu")
+            df = pd.DataFrame()
 
-    if revenue_file and not df.empty:
-        # Tìm cột "Tổng doanh số (VND)" hoặc "Doanh số (VND)"
-        col_rev = None
-        keywords = ["tổng doanh số", "doanh số (vnd)", "tổng tiền"]
-        for col in df.columns:
-            if any(k in str(col).lower() for k in keywords):
-                col_rev = col
-                break
-        
-        if col_rev:
-            # Lấy giá trị đầu tiên (Dòng tổng)
-            val = df[col_rev].iloc[0]
-            total_rev = parse_vn_currency(val)
-            logs.append(f"✅ Doanh thu: Đã lấy từ dòng tổng ({col_rev}): {total_rev:,.0f}")
-        else:
-            logs.append(f"⚠️ Không tìm thấy cột Doanh thu. Các cột: {list(df.columns)}")
+        if not df.empty:
+            # Tìm cột Doanh thu
+            col_rev = find_best_column(
+                df.columns, 
+                keywords=["tổng doanh số (vnd)", "doanh số (vnd)", "tổng tiền", "doanh thu"],
+                blacklist=["thẻ sản phẩm", "livestream", "video", "liên kết"] # Tránh lấy các cột con
+            )
+            
+            if col_rev:
+                # Lấy giá trị dòng đầu tiên (Dòng Tổng)
+                val = df[col_rev].iloc[0]
+                total_rev = parse_vn_currency(val)
+                logs.append(f"✅ Doanh thu: Lấy từ dòng 1 cột '{col_rev}' = {total_rev:,.0f}")
+            else:
+                logs.append(f"⚠️ Không tìm thấy cột Doanh thu. Có các cột: {list(df.columns)}")
 
-    # --- XỬ LÝ QUẢNG CÁO (ADS) ---
+    # --- XỬ LÝ ADS ---
     if ads_file:
         try:
-            # File Ads của Sếp có Header ở dòng 7 (index 6) -> skiprows=6
+            # Ads Header ở dòng 7 (skiprows=6)
             ads_file.seek(0)
-            # Thử đọc CSV trước (vì file Sếp gửi là csv)
-            df_ads = pd.read_csv(ads_file, skiprows=6, encoding='utf-8')
+            if ads_file.name.endswith(('xls', 'xlsx')):
+                df_ads = pd.read_excel(ads_file, skiprows=6, dtype=str)
+            else:
+                # Thử đọc CSV với UTF-16 (Shopee hay dùng) hoặc UTF-8
+                try: df_ads = pd.read_csv(ads_file, skiprows=6, dtype=str, encoding='utf-8')
+                except: df_ads = pd.read_csv(ads_file, skiprows=6, dtype=str, encoding='utf-16', sep='\t')
         except:
-            try:
-                # Nếu lỗi encoding, thử 'utf-16' (Shopee hay dùng)
-                ads_file.seek(0)
-                df_ads = pd.read_csv(ads_file, skiprows=6, encoding='utf-16', sep='\t')
-            except:
-                try:
-                    # Cuối cùng thử Excel
-                    ads_file.seek(0)
-                    df_ads = pd.read_excel(ads_file, skiprows=6)
-                except:
-                     logs.append("❌ Không đọc được file Ads")
-                     df_ads = pd.DataFrame()
+            logs.append("❌ Lỗi đọc file Ads")
+            df_ads = pd.DataFrame()
 
-    if ads_file and not df_ads.empty:
-        # Tìm cột "Chi phí"
-        col_cost = None
-        keywords_ads = ["chi phí", "cost"]
-        for col in df_ads.columns:
-            if any(k in str(col).lower() for k in keywords_ads):
-                col_cost = col
-                break
-        
-        if col_cost:
-            # Cộng tổng cột chi phí
-            total_ads = df_ads[col_cost].apply(parse_vn_currency).sum()
-            logs.append(f"✅ Ads: Đã cộng tổng cột ({col_cost}): {total_ads:,.0f}")
-        else:
-            logs.append(f"⚠️ Không tìm thấy cột Chi phí. Các cột: {list(df_ads.columns)}")
+        if not df_ads.empty:
+            # Tìm cột Chi phí (TRÁNH: chuyển đổi, trực tiếp, mỗi lượt)
+            col_cost = find_best_column(
+                df_ads.columns,
+                keywords=["chi phí", "cost"],
+                blacklist=["chuyển đổi", "trực tiếp", "mỗi lượt", "roas", "acos", "gmv"]
+            )
+            
+            if col_cost:
+                total_ads = df_ads[col_cost].apply(parse_vn_currency).sum()
+                logs.append(f"✅ Ads: Tổng cộng cột '{col_cost}' = {total_ads:,.0f}")
+            else:
+                logs.append(f"⚠️ Không tìm thấy cột Chi phí. Có các cột: {list(df_ads.columns)}")
 
     return total_rev, total_ads, logs
 
@@ -194,7 +193,7 @@ def process_shopee_files(revenue_file, ads_file):
 # 4. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.2")
+    st.title("🦅 BCM Cloud v4.3")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"])
@@ -215,7 +214,7 @@ with st.sidebar:
 # 5. LOGIC MODULES
 # ==================================================
 if menu == "📊 Báo Cáo & Excel":
-    st.title("📊 BÁO CÁO KINH DOANH (SNIPER FIX)")
+    st.title("📊 BÁO CÁO KINH DOANH (SMART SELECTOR)")
     d = st.date_input("Chọn tuần:", datetime.now())
     
     with st.expander("📂 UPLOAD FILE SHOPEE", expanded=True):
@@ -231,9 +230,7 @@ if menu == "📊 Báo Cáo & Excel":
     c1, c2, c3 = st.columns(3)
     nr = c1.number_input("Doanh thu", float(rev), step=1e5, format="%.0f")
     na = c2.number_input("Chi phí Ads", float(ads), step=5e4, format="%.0f")
-    # Tự động tính lợi nhuận ròng (Giả sử 30% Margin - Ads)
-    loi_nhuan = (nr * 0.3) - na
-    np = c3.number_input("Lợi nhuận Ròng (30%)", float(loi_nhuan), step=5e4, format="%.0f")
+    np = c3.number_input("Lợi nhuận Ròng (30%)", float(nr*0.3-na), step=5e4, format="%.0f")
     
     if st.button("💾 LƯU & XUẤT EXCEL", type="primary"):
         fp = save_report_to_excel(d, nr, na, np)
