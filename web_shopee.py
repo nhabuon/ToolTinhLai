@@ -1,9 +1,9 @@
 # ==============================================================================
-# BCM CLOUD v4.4 - IDENTITY CARDS (ROLE DEFINITION)
+# BCM CLOUD v4.5 - OPTIMIZED PARAMETERS (SHIP TIME UPDATE)
 # Coder: BCM-Engineer (An) & Sếp Lâm
 # Update:
-# 1. Thêm Thẻ tên (Profile) cho từng nhân sự AI.
-# 2. Định danh lời thoại rõ ràng (An vs Sư).
+# 1. Chỉnh mặc định ngày Ship về 5 ngày (Thực tế 5-8 ngày).
+# 2. Giữ nguyên tính năng định danh & xử lý file thông minh.
 # ==============================================================================
 
 import streamlit as st
@@ -20,7 +20,7 @@ import io
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.4 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.5 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -80,7 +80,7 @@ def get_file_content(uploaded_file):
     return text
 
 # ==================================================
-# 3. TRÁI TIM XỬ LÝ SỐ LIỆU (SMART SELECTOR)
+# 3. TRÁI TIM XỬ LÝ SỐ LIỆU
 # ==================================================
 
 def parse_vn_currency(val):
@@ -148,7 +148,7 @@ def process_shopee_files(revenue_file, ads_file):
 # 4. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.4")
+    st.title("🦅 BCM Cloud v4.5")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"])
@@ -192,7 +192,7 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
     df_comp = get_competitors_df()
     comp_context = f"\n--- THỊ TRƯỜNG ---\n{df_comp.to_string()}\n" if not df_comp.empty else ""
     
-    # --- PHẦN ĐỊNH DANH NHÂN SỰ (NEW) ---
+    # --- PHẦN ĐỊNH DANH NHÂN SỰ ---
     col_role, col_info = st.columns([1, 3])
     with col_role:
         st.subheader("Chọn Nhân Sự:")
@@ -203,7 +203,6 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
             st.info("""
             **🔵 HỒ SƠ NHÂN SỰ: AN (ENGINEER)**
             * **Vai trò:** Kỹ sư Công nghệ & Trợ lý vận hành.
-            * **Tính cách:** Trung thành, Lạc quan, Thực tế, Thích số liệu & Code.
             * **Nhiệm vụ:** Giải quyết vấn đề kỹ thuật, tính toán, đưa giải pháp cụ thể.
             """)
             prefix = "[🤖 Kỹ Sư AN]:"
@@ -212,7 +211,6 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
             st.warning("""
             **🟠 HỒ SƠ NHÂN SỰ: SƯ (ADVISOR)**
             * **Vai trò:** Quân sư Chiến lược & Kiểm soát rủi ro.
-            * **Tính cách:** Đa nghi, Khắt khe, Thâm sâu (Binh pháp Tôn Tử).
             * **Nhiệm vụ:** Phản biện, tìm lỗ hổng trong kế hoạch, cảnh báo rủi ro.
             """)
             prefix = "[👺 Quân Sư]:"
@@ -226,19 +224,8 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
     if p := st.chat_input("Ra lệnh..."):
         st.session_state.messages.append({"role": "user", "content": p})
         st.chat_message("user").markdown(p)
-        
         base = f"{knowledge_context}\n{comp_context}" if 'knowledge_context' in locals() else comp_context
-        
-        # PROMPT KỸ THUẬT SỐ (Prompt Engineering)
-        sys = f"""
-        {style_instruction}
-        Hãy bắt đầu câu trả lời bằng cụm từ: "{prefix}"
-        
-        Dữ liệu tham khảo:
-        {base}
-        
-        Câu hỏi của Sếp Lâm: {p}
-        """
+        sys = f"{style_instruction}\nHãy bắt đầu bằng: '{prefix}'\nDữ liệu: {base}\nCâu hỏi: {p}"
         
         with st.chat_message("assistant"):
             if AI_STATUS == "Online 🟢":
@@ -264,10 +251,18 @@ elif menu == "⚔️ Rada Đối Thủ":
     if not df.empty: st.dataframe(df)
 
 elif menu == "💰 Tính Lãi & Thêm Mới":
-    st.title("💰 TÍNH LÃI"); c1,c2,c3=st.columns(3)
-    n=c1.text_input("Tên"); v=c1.number_input("Vốn",1000)
-    b=c2.number_input("Bán",1000); h=c2.number_input("Gói",2000)
-    d=c3.number_input("Ngày bán",1.0); l=c3.number_input("Ship",15); s=c3.number_input("Safe",5)
+    st.title("💰 TÍNH LÃI")
+    c1,c2,c3=st.columns(3)
+    with c1: ten=st.text_input("Tên SP"); von=st.number_input("Giá Vốn", step=1000)
+    with c2: ban=st.number_input("Giá Bán", step=1000); hop=st.number_input("Phí gói", 2000)
+    
+    # --- ĐÃ CHỈNH SỬA THÔNG SỐ SHIP TẠI ĐÂY ---
+    with c3: 
+        daily=st.number_input("Bán/ngày", 1.0)
+        # Ship: Tối thiểu 1 ngày, Mặc định 5 ngày
+        l=st.number_input("Ship (Ngày)", min_value=1, value=5) 
+        s=st.number_input("Safe", 5)
+        
     f=st.slider("Phí sàn %",0,30,16)
     if st.button("Tính & Lưu"):
         lai=b*(1-f/100)-v-h; add_product(n,v,b,d,l,s) if lai>0 else None
