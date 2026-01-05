@@ -1,7 +1,7 @@
 # ==============================================================================
-# BCM CLOUD v3.6 - INTEGRATED VERSION (FINAL FIX)
+# BCM CLOUD v3.6 - FIX DATA PROCESSING (FINAL)
 # Coder: BCM-Engineer (An) & Sếp Lâm
-# Status: Stable 🟢
+# Update: Fix lỗi đọc file Doanh thu/Ads Shopee = 0
 # ==============================================================================
 
 import streamlit as st
@@ -17,11 +17,9 @@ from docx import Document
 # 1. CẤU HÌNH HỆ THỐNG & API
 # ==================================================
 st.set_page_config(page_title="BCM Cloud v3.6 - MIT Corp", page_icon="🦅", layout="wide")
-
-# Cấu hình CSS cho đẹp
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
-# Lấy API Key từ Secrets
+# Lấy API Key
 AI_STATUS = "Offline 🔴"
 try:
     if "GOOGLE_API_KEY" in st.secrets:
@@ -32,7 +30,7 @@ try:
 except Exception as e:
     st.error(f"Lỗi kết nối API: {e}")
 
-# Cấu hình Model AI (Ưu tiên Gemini 1.5 Pro cho ổn định)
+# Model Config
 MODEL_CONFIG = {"temperature": 0.7, "top_p": 0.95, "top_k": 64, "max_output_tokens": 8192}
 MODEL_NAME = "gemini-3-pro-preview" 
 
@@ -44,7 +42,7 @@ REPORT_FILE = "BAO_CAO_KINH_DOANH.xlsx"
 # 2. CÁC HÀM HỖ TRỢ (DATABASE & RAG)
 # ==================================================
 
-# --- A. HÀM XỬ LÝ DATABASE ---
+# --- DATABASE ---
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -58,29 +56,21 @@ init_db()
 
 def get_products_df():
     conn = sqlite3.connect(DB_FILE); df = pd.read_sql_query("SELECT * FROM products", conn); conn.close(); return df
-
 def get_products_list():
     df = get_products_df(); return df['name'].tolist() if not df.empty else []
-
 def get_my_price(product_name):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT selling_price FROM products WHERE name = ?", (product_name,)); res = c.fetchone(); conn.close(); return res[0] if res else 0
-
 def add_product(name, cost, price, daily, lead, safe):
     threshold = int(daily * lead + safe)
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("INSERT INTO products (name, cost_price, selling_price, daily_sales, lead_time, safety_stock, alert_threshold) VALUES (?, ?, ?, ?, ?, ?, ?)", (name, cost, price, daily, lead, safe, threshold)); conn.commit(); conn.close()
-
 def update_stock(pid, amount):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?", (amount, pid)); conn.commit(); conn.close()
-
 def add_competitor(my_prod, comp_name, url, price):
     date_now = datetime.now().strftime("%Y-%m-%d"); conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("INSERT INTO competitors (my_product_name, comp_name, comp_url, comp_price, last_check) VALUES (?, ?, ?, ?, ?)", (my_prod, comp_name, url, price, date_now)); conn.commit(); conn.close()
-
 def get_competitors_df():
     conn = sqlite3.connect(DB_FILE); df = pd.read_sql_query("SELECT * FROM competitors", conn); conn.close(); return df
-
 def update_comp_price(comp_id, new_price):
     date_now = datetime.now().strftime("%Y-%m-%d"); conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("UPDATE competitors SET comp_price = ?, last_check = ? WHERE comp_id = ?", (new_price, date_now, comp_id)); conn.commit(); conn.close()
-
 def save_report_to_excel(date_obj, rev, ads, prof):
     start_date = (date_obj - timedelta(days=date_obj.weekday())).strftime("%Y-%m-%d")
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("REPLACE INTO financials (date, revenue, ad_spend, profit) VALUES (?, ?, ?, ?)", (start_date, rev, ads, prof)); conn.commit(); conn.close()
@@ -93,43 +83,54 @@ def save_report_to_excel(date_obj, rev, ads, prof):
     else: df_new.to_excel(REPORT_FILE, index=False)
     return REPORT_FILE
 
-# --- ĐÃ SỬA LỖI SYNTAX Ở HÀM NÀY ---
+# --- HÀM XỬ LÝ FILE (ĐÃ NÂNG CẤP THÔNG MINH) ---
 def process_shopee_files(revenue_file, ads_file):
     total_revenue = 0
     total_ads = 0
     
+    def clean_and_sum(df, keywords):
+        # 1. Tìm cột chứa từ khóa
+        found_col = None
+        for col in df.columns:
+            c_lower = str(col).lower()
+            for kw in keywords:
+                if kw in c_lower:
+                    found_col = col
+                    break
+            if found_col: break
+            
+        if not found_col: return 0
+        
+        # 2. Xử lý dữ liệu (Số hoặc Chữ)
+        if pd.api.types.is_numeric_dtype(df[found_col]):
+            return df[found_col].fillna(0).sum()
+        else:
+            # Xóa '₫', '.', ',' và chữ cái -> Chỉ giữ lại số
+            # Ví dụ: "1.500.000 ₫" -> "1500000"
+            s = df[found_col].astype(str).str.replace(r'[^\d]', '', regex=True)
+            return pd.to_numeric(s, errors='coerce').fillna(0).sum()
+
     # Xử lý File Doanh Thu
     if revenue_file:
         try:
-            if revenue_file.name.endswith(('xls','xlsx')):
-                df = pd.read_excel(revenue_file)
-            else:
-                df = pd.read_csv(revenue_file)
-            
-            # Tìm cột chứa tiền
-            cols = [c for c in df.columns if "thành tiền" in str(c).lower() or "tổng tiền" in str(c).lower()]
-            if cols:
-                total_revenue = df[cols[0]].astype(str).str.replace(r'[^\d.]', '', regex=True).apply(pd.to_numeric, errors='coerce').sum()
-        except Exception:
-            pass # Bỏ qua nếu lỗi file
+            if revenue_file.name.endswith(('xls','xlsx')): df = pd.read_excel(revenue_file)
+            else: df = pd.read_csv(revenue_file)
+            # Từ khóa mở rộng: doanh thu, tổng tiền, thành tiền
+            total_revenue = clean_and_sum(df, ["doanh thu", "tổng tiền", "thành tiền", "total amount", "grand total"])
+        except: pass
 
     # Xử lý File Ads
     if ads_file:
         try:
-            if ads_file.name.endswith(('xls','xlsx')):
-                df = pd.read_excel(ads_file)
-            else:
-                df = pd.read_csv(ads_file)
-                
-            cols = [c for c in df.columns if "chi phí" in str(c).lower()]
-            if cols:
-                total_ads = df[cols[0]].astype(str).str.replace(r'[^\d.]', '', regex=True).apply(pd.to_numeric, errors='coerce').sum()
-        except Exception:
-            pass # Bỏ qua nếu lỗi file
+            if ads_file.name.endswith(('xls','xlsx')): df = pd.read_excel(ads_file)
+            else: df = pd.read_csv(ads_file)
+            # Từ khóa: chi phí, cost
+            total_ads = clean_and_sum(df, ["chi phí", "cost", "expense"])
+        except: pass
 
     return total_revenue, total_ads
 
-# --- B. HÀM XỬ LÝ FILE RAG ---
+# --- RAG UTILS ---
 def get_file_content(uploaded_file):
     text = ""
     try:
@@ -152,42 +153,29 @@ with st.sidebar:
     st.title("🦅 BCM Cloud v3.6")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
-
-    menu = st.radio(
-        "Chọn chức năng:",
-        ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"]
-    )
+    menu = st.radio("Chọn chức năng:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"])
     
     if menu == "🤖 Phòng Họp Chiến Lược":
         st.markdown("---")
         st.subheader("📂 Kho Tri Thức (RAG)")
         uploaded_files = st.file_uploader("Nạp tài liệu (PDF, Word):", accept_multiple_files=True, type=['pdf', 'docx', 'txt'])
-        
         knowledge_context = ""
         if uploaded_files:
             with st.status("Đang học dữ liệu...", expanded=True) as status:
                 for file in uploaded_files:
                     content = get_file_content(file)
-                    if content:
-                        knowledge_context += f"\n--- TÀI LIỆU: {file.name} ---\n{content}\n"
+                    if content: knowledge_context += f"\n--- TÀI LIỆU: {file.name} ---\n{content}\n"
                 status.update(label="Đã nạp xong kiến thức!", state="complete", expanded=False)
-        else:
-             knowledge_context = ""
 
 # ==================================================
-# 4. LOGIC TỪNG MODULE
+# 4. LOGIC MODULES
 # ==================================================
 
-# ---------------- MODULE 1: PHÒNG HỌP CHIẾN LƯỢC ----------------
 if menu == "🤖 Phòng Họp Chiến Lược":
     st.header("🤖 PHÒNG HỌP CHIẾN LƯỢC (DUAL CORE)")
-
-    # Lấy dữ liệu đối thủ
     df_comp = get_competitors_df()
-    comp_context = ""
-    if not df_comp.empty:
-        comp_context = f"\n--- DỮ LIỆU THỊ TRƯỜNG (Từ Radar) ---\n{df_comp.to_string()}\n"
-
+    comp_context = f"\n--- DỮ LIỆU THỊ TRƯỜNG (Từ Radar) ---\n{df_comp.to_string()}\n" if not df_comp.empty else ""
+    
     role = st.radio("Chọn nhân sự:", ["🔴 An (RCM Engineer)", "🟡 Sư (Advisor)"], horizontal=True)
     st.divider()
 
@@ -198,72 +186,58 @@ if menu == "🤖 Phòng Họp Chiến Lược":
     if prompt := st.chat_input("Ra lệnh cho hệ thống..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
-
-        base_context = f"{knowledge_context}\n{comp_context}"
+        
+        base_context = f"{knowledge_context}\n{comp_context}" if 'knowledge_context' in locals() else comp_context
         
         if "An" in role:
-            system_instruction = f"""
-            Bạn là An - Kỹ sư BCM, trợ lý của Sếp Lâm.
-            Phong cách: Năng động, Lạc quan, Kỹ thuật.
-            Dữ liệu tham khảo: {base_context}
-            Nhiệm vụ: Trả lời câu hỏi dựa trên dữ liệu.
-            """
+            sys_inst = f"Bạn là An - Kỹ sư BCM. Phong cách: Kỹ thuật, Cụ thể. Dữ liệu: {base_context}"
         else:
-            system_instruction = f"""
-            Bạn là Sư (Advisor) - Cố vấn chiến lược KHẮT KHE & ĐA NGHI.
-            Phong cách: Thâm sâu, hay tìm lỗ hổng (Loophole).
-            Dữ liệu tham khảo: {base_context}
-            Nhiệm vụ: Phản biện ý tưởng của Sếp.
-            """
-
-        full_prompt = f"{system_instruction}\n\nCâu hỏi: {prompt}"
+            sys_inst = f"Bạn là Sư (Advisor). Phong cách: Chiến lược, Soi mói rủi ro. Dữ liệu: {base_context}"
+            
+        full_prompt = f"{sys_inst}\n\nCâu hỏi: {prompt}"
 
         with st.chat_message("assistant"):
             if AI_STATUS == "Online 🟢":
                 try:
                     model = genai.GenerativeModel(MODEL_NAME)
                     response = model.generate_content(full_prompt, stream=True)
-                    full_response = ""
-                    placeholder = st.empty()
+                    full_res = ""
+                    ph = st.empty()
                     for chunk in response:
-                        if chunk.text:
-                            full_response += chunk.text
-                            placeholder.markdown(full_response + "▌")
-                    placeholder.markdown(full_response)
-                    st.session_state.messages.append({"role": "assistant", "content": full_response})
-                except Exception as e:
-                    st.error(f"Lỗi AI: {e}")
-            else:
-                st.error("⚠️ AI đang Offline. Vui lòng kiểm tra Secrets!")
+                        if chunk.text: full_res += chunk.text; ph.markdown(full_res + "▌")
+                    ph.markdown(full_res)
+                    st.session_state.messages.append({"role": "assistant", "content": full_res})
+                except Exception as e: st.error(f"Lỗi AI: {e}")
+            else: st.error("⚠️ AI Offline. Check Secrets!")
 
-# ---------------- MODULE 2: BÁO CÁO ----------------
 elif menu == "📊 Báo Cáo & Excel":
     st.title("📊 BÁO CÁO KINH DOANH")
-    st.caption(f"File lưu tại: **{REPORT_FILE}**")
+    st.info("💡 Mẹo: Hỗ trợ cả file 'Phân Tích Bán Hàng' và 'Danh Sách Đơn Hàng'.")
     d = st.date_input("Chọn tuần:", datetime.now())
-    with st.expander("Upload File Shopee"):
-        f1=st.file_uploader("File Doanh Thu"); f2=st.file_uploader("File Ads")
+    with st.expander("Upload File Shopee", expanded=True):
+        f1=st.file_uploader("File Doanh Thu (Excel/CSV)"); f2=st.file_uploader("File Ads (Excel/CSV)")
         arev, aads = process_shopee_files(f1, f2)
+    
     st.divider()
     c1, c2, c3 = st.columns(3)
-    nr = c1.number_input("Doanh thu", float(arev) if arev else 0.0, step=1e5, format="%.0f")
-    na = c2.number_input("Chi phí Ads", float(aads) if aads else 0.0, step=5e4, format="%.0f")
-    np = c3.number_input("Lợi nhuận Ròng", float(nr*0.3-na), step=5e4, format="%.0f")
+    nr = c1.number_input("Doanh thu", float(arev), step=1e5, format="%.0f")
+    na = c2.number_input("Chi phí Ads", float(aads), step=5e4, format="%.0f")
+    np = c3.number_input("Lợi nhuận Ròng (30%)", float(nr*0.3-na), step=5e4, format="%.0f")
+    
     if st.button("💾 LƯU & XUẤT EXCEL", type="primary"):
         fp = save_report_to_excel(d, nr, na, np)
         st.success(f"✅ Đã xuất báo cáo: {fp}")
 
-# ---------------- MODULE 3: RADA ----------------
 elif menu == "⚔️ Rada Đối Thủ":
     st.title("⚔️ RADA ĐỐI THỦ")
     with st.expander("➕ Thêm Đối Thủ"):
         my_prods = get_products_list()
-        if not my_prods: st.warning("Kho trống!")
-        else:
+        if my_prods:
             c1, c2 = st.columns(2)
             with c1: p_me = st.selectbox("SP Mình", my_prods); p_shop = st.text_input("Tên Shop")
             with c2: p_link = st.text_input("Link"); p_price = st.number_input("Giá Họ", step=1000)
             if st.button("Lưu"): add_competitor(p_me, p_shop, p_link, p_price); st.rerun()
+        else: st.warning("Kho trống!")
     
     df_comp = get_competitors_df()
     if not df_comp.empty:
@@ -273,14 +247,10 @@ elif menu == "⚔️ Rada Đối Thủ":
             prices = df_view['comp_price'].tolist(); my_p = get_my_price(prod); avg_p = sum(prices)/len(prices)
             st.divider(); m1, m2, m3 = st.columns(3)
             m1.metric("Min", f"{min(prices):,.0f}"); m2.metric("Avg", f"{avg_p:,.0f}"); m3.metric("Max", f"{max(prices):,.0f}")
-            delta = my_p - avg_p
-            if delta>0: st.metric("GIÁ SẾP", f"{my_p:,.0f}", f"Cao hơn {delta/avg_p*100:.1f}% 🔴", delta_color="inverse")
-            else: st.metric("GIÁ SẾP", f"{my_p:,.0f}", f"Thấp hơn {abs(delta/avg_p*100):.1f}% 🟢", delta_color="normal")
             st.dataframe(df_view)
 
-# ---------------- MODULE 4: TÍNH LÃI ----------------
 elif menu == "💰 Tính Lãi & Thêm Mới":
-    st.title("💰 CÔNG CỤ TÍNH LÃI")
+    st.title("💰 TÍNH LÃI")
     c1, c2, c3 = st.columns(3)
     with c1: ten=st.text_input("Tên SP"); von=st.number_input("Giá Vốn", step=1000)
     with c2: ban=st.number_input("Giá Bán", step=1000); hop=st.number_input("Phí gói", 2000)
@@ -288,11 +258,9 @@ elif menu == "💰 Tính Lãi & Thêm Mới":
     san = st.slider("Phí sàn %", 0, 30, 16)
     if st.button("🚀 TÍNH & LƯU"):
         lai = ban*(1-san/100) - von - hop
-        rop = int(daily*lead + safe)
-        st.metric("LÃI RÒNG", f"{lai:,.0f} đ", f"Nhập khi kho còn: {rop} cái")
         if lai>0: add_product(ten, von, ban, daily, lead, safe); st.success("Đã lưu!")
+        st.metric("LÃI RÒNG", f"{lai:,.0f} đ")
 
-# ---------------- MODULE 5: KHO HÀNG ----------------
 elif menu == "📦 Kho Hàng":
     st.title("📦 KHO HÀNG")
     df = get_products_df()
