@@ -1,7 +1,7 @@
 # ==============================================================================
-# BCM CLOUD v4.1 - FORCE DECODE & ENGINE PYTHON (FINAL PATCH)
+# BCM CLOUD v4.2 - SNIPER MODE (TARGETED DATA EXTRACTION)
 # Coder: BCM-Engineer (An) & Sếp Lâm
-# Update: Dùng engine='python' để bỏ qua dòng lỗi, sửa lỗi đọc file 0đ
+# Update: Đọc trực tiếp dòng tổng (Doanh thu) và bỏ qua Header thừa (Ads)
 # ==============================================================================
 
 import streamlit as st
@@ -18,7 +18,7 @@ import io
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.1 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.2 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -78,131 +78,115 @@ def get_file_content(uploaded_file):
     return text
 
 # ==================================================
-# 3. TRÁI TIM XỬ LÝ FILE (CÔNG NGHỆ MỚI: BUFFER SCAN)
+# 3. TRÁI TIM XỬ LÝ SỐ LIỆU (ĐÃ FIX CHUẨN SHOPEE VN)
 # ==================================================
 
-def convert_vn_currency(val):
-    """Chuyển đổi tiền tệ VN: 14.267.984 -> 14267984"""
+def parse_vn_currency(val):
+    """
+    Chuyển đổi chuỗi tiền Việt thành số.
+    Ví dụ: "14.267.984" -> 14267984.0
+    Ví dụ: "117.611,96" -> 117611.96
+    """
     if pd.isna(val): return 0
-    s = str(val)
-    s = re.sub(r'[^\d.,-]', '', s) 
-    # Logic đoán dấu (Ưu tiên: Chấm là hàng nghìn, Phẩy là thập phân)
-    if s.count('.') > 1: s = s.replace('.', '') 
-    elif '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.') 
-    elif ',' in s: s = s.replace(',', '.') 
-    elif '.' in s: 
+    s = str(val).strip()
+    
+    # Nếu là số sẵn rồi thì trả về luôn
+    if isinstance(val, (int, float)): return float(val)
+
+    # 1. Xóa hết các ký tự không phải số, dấu chấm, dấu phẩy
+    s = re.sub(r'[^\d.,]', '', s)
+    
+    # 2. Xử lý dấu phân cách
+    # Shopee VN: Chấm (.) là hàng nghìn, Phẩy (,) là thập phân
+    if '.' in s and ',' in s: 
+        # Ví dụ: 1.200,50 -> Xóa chấm, thay phẩy bằng chấm
+        s = s.replace('.', '').replace(',', '.')
+    elif '.' in s:
+        # Ví dụ: 14.267.984 -> Xóa chấm
+        # Ví dụ hiếm: 12.5 (12 phẩy 5) -> Nếu 3 số sau chấm thì nghi là nghìn
         parts = s.split('.')
-        if len(parts) > 1 and len(parts[-1]) == 3: s = s.replace('.', '')
+        if len(parts) > 1 and len(parts[-1]) == 3:
+            s = s.replace('.', '')
+        # Nếu không thì giữ nguyên (coi như số thập phân chuẩn Mỹ)
+    elif ',' in s:
+        # Ví dụ: 123,45 -> Thay phẩy bằng chấm
+        s = s.replace(',', '.')
+
     try: return float(s)
-    except: return 0
-
-def force_read_file(file):
-    """
-    Đọc file vào bộ nhớ -> Convert String -> Tìm Header -> Đọc Pandas
-    Cách này tránh lỗi file con trỏ (pointer) và lỗi encoding.
-    """
-    try:
-        # 1. Đọc nội dung file thô (Bytes)
-        bytes_data = file.getvalue()
-        
-        # 2. Cố gắng giải mã thành chữ (String)
-        text_data = ""
-        encodings = ['utf-8', 'utf-16', 'utf-8-sig', 'latin1', 'cp1252']
-        for enc in encodings:
-            try:
-                text_data = bytes_data.decode(enc)
-                break
-            except: continue
-            
-        if not text_data: return None, "Lỗi Encoding (Không đọc được chữ)"
-
-        # 3. Tạo bộ nhớ đệm (StringIO) để Pandas đọc
-        # (Giả lập file text đã sạch sẽ)
-        
-        # 4. Quét tìm dòng tiêu đề
-        lines = text_data.splitlines()
-        header_idx = 0
-        keywords = ["tổng doanh số (vnd)", "mã đơn hàng", "chi phí", "tên dịch vụ hiển thị", "ngày đặt hàng", "tổng tiền", "doanh thu"]
-        
-        for i, line in enumerate(lines[:50]): # Quét 50 dòng đầu
-            if any(k in line.lower() for k in keywords):
-                header_idx = i
-                break
-        
-        # 5. Đọc Pandas từ bộ nhớ đệm
-        # Dùng engine='python' để tự xử lý các dòng bị lỗi (bad lines)
-        buffer = io.StringIO(text_data)
-        
-        try:
-            # Nếu là CSV
-            df = pd.read_csv(buffer, header=header_idx, sep=None, engine='python')
-        except:
-            # Nếu thất bại, thử đọc như Excel (nếu người dùng đổi đuôi)
-            buffer = io.BytesIO(bytes_data)
-            df = pd.read_excel(buffer, header=header_idx)
-            
-        return df, "OK"
-        
-    except Exception as e:
-        return None, str(e)
+    except: return 0.0
 
 def process_shopee_files(revenue_file, ads_file):
-    total_rev = 0; total_ads = 0; logs = []
+    total_rev = 0
+    total_ads = 0
+    logs = []
 
-    # --- XỬ LÝ DOANH THU ---
+    # --- XỬ LÝ DOANH THU (SHOP STATS) ---
     if revenue_file:
-        df, status = force_read_file(revenue_file)
-        if df is not None:
-            logs.append(f"✅ File Doanh Thu: Đọc thành công ({len(df)} dòng)")
-            
-            # Tìm cột tiền
-            col_target = None
-            kw_rev = ["tổng doanh số (vnd)", "doanh số (vnd)", "tổng tiền", "doanh thu"]
-            for col in df.columns:
-                if any(k in str(col).lower() for k in kw_rev):
-                    col_target = col; break
-            
-            if col_target:
-                logs.append(f"👉 Cột tiền: {col_target}")
-                # Lọc bỏ dòng tổng (thường Shopee có dòng tổng ở đầu hoặc cuối)
-                # Logic: Nếu file có nhiều dòng, ta cộng tổng các dòng con, hoặc lấy dòng tổng nếu có
-                # Để an toàn: Ta tính tổng cột, nhưng nếu kết quả quá lớn (gấp đôi thực tế), ta chia đôi?
-                # Cách tốt nhất với Shopee: Convert hết và cộng lại.
-                # Tuy nhiên, file Shopee Stats có dòng 1 là Tổng cả tuần, các dòng sau là từng ngày.
-                # Mẹo: Nếu dòng đầu tiên chứa khoảng thời gian (vd: "29-12..."), bỏ qua nó.
-                
-                df['clean_money'] = df[col_target].apply(convert_vn_currency)
-                
-                # Kiểm tra nếu dòng đầu tiên > tổng các dòng còn lại (dấu hiệu dòng Tổng)
-                first_val = df['clean_money'].iloc[0]
-                rest_sum = df['clean_money'].iloc[1:].sum()
-                
-                # Nếu dòng 1 xấp xỉ tổng còn lại -> Chỉ lấy dòng 1 (là dòng Tổng tuần)
-                if len(df) > 1 and abs(first_val - rest_sum) < (first_val * 0.1): # Sai số 10%
-                    total_rev = first_val
-                    logs.append("ℹ️ Phát hiện dòng Tổng ở đầu. Đã lấy giá trị này.")
-                else:
-                    total_rev = df['clean_money'].sum()
-            else:
-                logs.append(f"⚠️ Không thấy cột tiền. Cột có: {list(df.columns)}")
-        else: logs.append(f"❌ Lỗi Doanh Thu: {status}")
+        try:
+            # Shop Stats thường có Header ở dòng 1 (index 0)
+            # Dòng 2 (index 1) là dòng TỔNG CỘNG -> Lấy luôn dòng này!
+            df = pd.read_csv(revenue_file, header=0, encoding='utf-8')
+        except:
+            try:
+                revenue_file.seek(0)
+                df = pd.read_excel(revenue_file, header=0)
+            except:
+                logs.append("❌ Không đọc được file Doanh thu (Lỗi Format)")
+                df = pd.DataFrame()
 
-    # --- XỬ LÝ ADS ---
+    if revenue_file and not df.empty:
+        # Tìm cột "Tổng doanh số (VND)" hoặc "Doanh số (VND)"
+        col_rev = None
+        keywords = ["tổng doanh số", "doanh số (vnd)", "tổng tiền"]
+        for col in df.columns:
+            if any(k in str(col).lower() for k in keywords):
+                col_rev = col
+                break
+        
+        if col_rev:
+            # Lấy giá trị đầu tiên (Dòng tổng)
+            val = df[col_rev].iloc[0]
+            total_rev = parse_vn_currency(val)
+            logs.append(f"✅ Doanh thu: Đã lấy từ dòng tổng ({col_rev}): {total_rev:,.0f}")
+        else:
+            logs.append(f"⚠️ Không tìm thấy cột Doanh thu. Các cột: {list(df.columns)}")
+
+    # --- XỬ LÝ QUẢNG CÁO (ADS) ---
     if ads_file:
-        df, status = force_read_file(ads_file)
-        if df is not None:
-            logs.append(f"✅ File Ads: Đọc thành công")
-            col_target = None
-            kw_ads = ["chi phí", "cost", "tiền chạy"]
-            for col in df.columns:
-                if any(k in str(col).lower() for k in kw_ads):
-                    col_target = col; break
-            
-            if col_target:
-                logs.append(f"👉 Cột chi phí: {col_target}")
-                total_ads = df[col_target].apply(convert_vn_currency).sum()
-            else: logs.append(f"⚠️ Không thấy cột phí.")
-        else: logs.append(f"❌ Lỗi Ads: {status}")
+        try:
+            # File Ads của Sếp có Header ở dòng 7 (index 6) -> skiprows=6
+            ads_file.seek(0)
+            # Thử đọc CSV trước (vì file Sếp gửi là csv)
+            df_ads = pd.read_csv(ads_file, skiprows=6, encoding='utf-8')
+        except:
+            try:
+                # Nếu lỗi encoding, thử 'utf-16' (Shopee hay dùng)
+                ads_file.seek(0)
+                df_ads = pd.read_csv(ads_file, skiprows=6, encoding='utf-16', sep='\t')
+            except:
+                try:
+                    # Cuối cùng thử Excel
+                    ads_file.seek(0)
+                    df_ads = pd.read_excel(ads_file, skiprows=6)
+                except:
+                     logs.append("❌ Không đọc được file Ads")
+                     df_ads = pd.DataFrame()
+
+    if ads_file and not df_ads.empty:
+        # Tìm cột "Chi phí"
+        col_cost = None
+        keywords_ads = ["chi phí", "cost"]
+        for col in df_ads.columns:
+            if any(k in str(col).lower() for k in keywords_ads):
+                col_cost = col
+                break
+        
+        if col_cost:
+            # Cộng tổng cột chi phí
+            total_ads = df_ads[col_cost].apply(parse_vn_currency).sum()
+            logs.append(f"✅ Ads: Đã cộng tổng cột ({col_cost}): {total_ads:,.0f}")
+        else:
+            logs.append(f"⚠️ Không tìm thấy cột Chi phí. Các cột: {list(df_ads.columns)}")
 
     return total_rev, total_ads, logs
 
@@ -210,7 +194,7 @@ def process_shopee_files(revenue_file, ads_file):
 # 4. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.1")
+    st.title("🦅 BCM Cloud v4.2")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"])
@@ -231,8 +215,7 @@ with st.sidebar:
 # 5. LOGIC MODULES
 # ==================================================
 if menu == "📊 Báo Cáo & Excel":
-    st.title("📊 BÁO CÁO KINH DOANH (FORCE MODE)")
-    st.info("💡 Hệ thống dùng thuật toán cưỡng chế đọc file để sửa lỗi định dạng.")
+    st.title("📊 BÁO CÁO KINH DOANH (SNIPER FIX)")
     d = st.date_input("Chọn tuần:", datetime.now())
     
     with st.expander("📂 UPLOAD FILE SHOPEE", expanded=True):
@@ -241,14 +224,16 @@ if menu == "📊 Báo Cáo & Excel":
         
         if f1 or f2:
             rev, ads, debug_info = process_shopee_files(f1, f2)
-            with st.expander("🔍 Nhật Ký Xử Lý (Log)"):
+            with st.expander("🔍 Nhật Ký Xử Lý (Log)", expanded=True):
                 for l in debug_info: st.write(l)
 
     st.divider()
     c1, c2, c3 = st.columns(3)
     nr = c1.number_input("Doanh thu", float(rev), step=1e5, format="%.0f")
     na = c2.number_input("Chi phí Ads", float(ads), step=5e4, format="%.0f")
-    np = c3.number_input("Lợi nhuận Ròng (30%)", float(nr*0.3-na), step=5e4, format="%.0f")
+    # Tự động tính lợi nhuận ròng (Giả sử 30% Margin - Ads)
+    loi_nhuan = (nr * 0.3) - na
+    np = c3.number_input("Lợi nhuận Ròng (30%)", float(loi_nhuan), step=5e4, format="%.0f")
     
     if st.button("💾 LƯU & XUẤT EXCEL", type="primary"):
         fp = save_report_to_excel(d, nr, na, np)
