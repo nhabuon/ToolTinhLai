@@ -1,9 +1,9 @@
 # ==============================================================================
-# BCM CLOUD v4.7 - FULL IMPORT (ADVANCED WAREHOUSE)
+# BCM CLOUD v4.8 - EXCEL STANDARD (USER FRIENDLY)
 # Coder: BCM-Engineer (An) & Sếp Lâm
 # Update:
-# 1. Nhập kho từ Excel với đầy đủ 7 thông số (Tồn kho, Ship, Safety...).
-# 2. Tạo nút tải File Mẫu chuẩn để Sếp dễ nhập liệu.
+# 1. File mẫu chuyển sang định dạng .xlsx để dễ nhập liệu.
+# 2. Tối ưu hóa quy trình Import/Export.
 # ==============================================================================
 
 import streamlit as st
@@ -20,7 +20,7 @@ import io
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.7 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.8 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -51,23 +51,16 @@ def get_products_df(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELE
 def get_products_list(): df=get_products_df(); return df['name'].tolist() if not df.empty else []
 def get_my_price(n): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT selling_price FROM products WHERE name=?",(n,)); r=c.fetchone(); conn.close(); return r[0] if r else 0
 
-# --- NÂNG CẤP HÀM NHẬP KHO ĐẦY ĐỦ ---
 def add_product_full(name, cost, price, stock, daily, lead, safe): 
-    # Tính ngưỡng cảnh báo
     threshold = int(daily * lead + safe)
     conn = sqlite3.connect(DB_FILE)
     cur = conn.cursor()
-    
-    # Kiểm tra tồn tại
     cur.execute("SELECT id FROM products WHERE name = ?", (name,))
     exists = cur.fetchone()
-    
     if not exists:
-        # Thêm mới đầy đủ
         cur.execute("INSERT INTO products (name, cost_price, selling_price, stock_quantity, daily_sales, lead_time, safety_stock, alert_threshold) VALUES (?,?,?,?,?,?,?,?)", 
                     (name, cost, price, stock, daily, lead, safe, threshold))
     else:
-        # Cập nhật thông tin (Nếu import đè)
         cur.execute("""
             UPDATE products 
             SET cost_price=?, selling_price=?, stock_quantity=?, daily_sales=?, lead_time=?, safety_stock=?, alert_threshold=? 
@@ -163,7 +156,7 @@ def process_shopee_files(revenue_file, ads_file):
 # 4. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.7")
+    st.title("🦅 BCM Cloud v4.8")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Nhập Kho", "📦 Kho Hàng & Backup"])
@@ -199,10 +192,15 @@ if menu == "📊 Báo Cáo & Excel":
     na = c2.number_input("Chi phí Ads", float(ads), step=5e4, format="%.0f")
     np = c3.number_input("Lợi nhuận Ròng (30%)", float(nr*0.3-na), step=5e4, format="%.0f")
     
+    # Export Excel Xịn
+    output = io.BytesIO()
     data = {'Ngày': [datetime.now().strftime("%Y-%m-%d")], 'Doanh Thu': [nr], 'Ads': [na], 'Lợi Nhuận': [np]}
     df_export = pd.DataFrame(data)
-    csv = df_export.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("💾 TẢI BÁO CÁO VỀ MÁY", csv, "bao_cao_ngay.csv", "text/csv", type="primary")
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_export.to_excel(writer, index=False, sheet_name='BaoCao')
+    excel_data = output.getvalue()
+    
+    st.download_button("💾 TẢI BÁO CÁO (.xlsx)", excel_data, "bao_cao_ngay.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
 
 elif menu == "🤖 Phòng Họp Chiến Lược":
     st.header("🤖 PHÒNG HỌP CHIẾN LƯỢC")
@@ -256,7 +254,7 @@ elif menu == "⚔️ Rada Đối Thủ":
 elif menu == "💰 Tính Lãi & Nhập Kho":
     st.title("💰 TÍNH LÃI & NHẬP KHO")
     
-    tab1, tab2 = st.tabs(["Thêm Lẻ (Từng SP)", "Nhập Excel (Full Data)"])
+    tab1, tab2 = st.tabs(["Thêm Lẻ", "Nhập Excel (Full Data)"])
     
     with tab1:
         c1,c2,c3=st.columns(3)
@@ -264,19 +262,20 @@ elif menu == "💰 Tính Lãi & Nhập Kho":
         with c2: ban=st.number_input("Giá Bán", step=1000); hop=st.number_input("Phí gói", 2000)
         with c3: 
             daily=st.number_input("Bán/ngày", 1.0)
-            l=st.number_input("Ship (Ngày)", min_value=1, value=5) # Đã set mặc định 5
+            l=st.number_input("Ship (Ngày)", min_value=1, value=5) 
             s=st.number_input("Safe", 5)
         f=st.slider("Phí sàn %",0,30,16)
         if st.button("Tính & Lưu Kho"):
             lai=ban*(1-f/100)-von-hop
-            add_product_full(ten, von, ban, 0, daily, l, s) # Thêm lẻ mặc định tồn=0
+            add_product_full(ten, von, ban, 0, daily, l, s) 
             st.metric("Lãi", f"{lai:,.0f}")
             if lai>0: st.success("Đã lưu vào kho!")
             
     with tab2:
-        st.info("💡 **HƯỚNG DẪN:**")
+        st.info("💡 **HƯỚNG DẪN:** Tải file mẫu .xlsx -> Điền số liệu -> Upload lại.")
         
-        # Tạo file mẫu để user tải về
+        # TẠO FILE EXCEL MẪU (XỊN)
+        output = io.BytesIO()
         sample_data = {
             'Tên sản phẩm': ['Robot T20', 'Nước lau sàn'],
             'Giá vốn': [8000000, 150000],
@@ -287,19 +286,21 @@ elif menu == "💰 Tính Lãi & Nhập Kho":
             'Tồn An Toàn': [5, 10]
         }
         df_sample = pd.DataFrame(sample_data)
-        csv_sample = df_sample.to_csv(index=False).encode('utf-8-sig')
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_sample.to_excel(writer, index=False, sheet_name='NhapKho')
+        xlsx_sample = output.getvalue()
         
         col_down, col_up = st.columns([1, 2])
         with col_down:
             st.download_button(
-                label="📥 Tải File Mẫu",
-                data=csv_sample,
-                file_name="mau_nhap_kho_bcm.csv",
-                mime="text/csv",
+                label="📥 Tải File Mẫu (.xlsx)",
+                data=xlsx_sample,
+                file_name="mau_nhap_kho_bcm.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
         
         with col_up:
-            f_excel = st.file_uploader("Upload File đã điền (.csv/.xlsx)")
+            f_excel = st.file_uploader("Upload File (.xlsx / .csv)")
             if f_excel:
                 if st.button("🚀 Xử Lý Nhập Kho"):
                     try:
@@ -307,11 +308,9 @@ elif menu == "💰 Tính Lãi & Nhập Kho":
                         else: df_in = pd.read_excel(f_excel)
                         
                         count = 0
-                        # Mapping cột thông minh
-                        # Ưu tiên tìm tên cột tiếng Việt, nếu không có thì lấy theo thứ tự cột 0,1,2,3...
                         for _, row in df_in.iterrows():
                             try:
-                                # Logic mapping: Lấy theo tên cột nếu có, không thì lấy index
+                                # Logic mapping an toàn
                                 n = row.get('Tên sản phẩm', row.iloc[0])
                                 c = float(row.get('Giá vốn', row.iloc[1]))
                                 p = float(row.get('Giá bán', row.iloc[2]))
@@ -331,8 +330,13 @@ elif menu == "📦 Kho Hàng & Backup":
     st.title("📦 QUẢN LÝ KHO & BACKUP")
     df = get_products_df()
     if not df.empty:
-        csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button("💾 SAO LƯU TOÀN BỘ KHO", csv, "kho_hang_backup.csv", "text/csv", type="primary")
+        # Export Excel Xịn cho Backup luôn
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Backup')
+        xlsx_backup = output.getvalue()
+        
+        st.download_button("💾 SAO LƯU DỮ LIỆU (.xlsx)", xlsx_backup, "kho_hang_backup.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         st.markdown("---")
         st.dataframe(df, use_container_width=True)
     else:
