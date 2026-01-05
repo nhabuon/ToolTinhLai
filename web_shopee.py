@@ -1,9 +1,9 @@
 # ==============================================================================
-# BCM CLOUD v4.3 - SMART COLUMN SELECTOR (FIX WRONG COLUMN)
+# BCM CLOUD v4.4 - IDENTITY CARDS (ROLE DEFINITION)
 # Coder: BCM-Engineer (An) & Sếp Lâm
 # Update:
-# 1. Ads: Loại trừ cột "Chi phí chuyển đổi", chỉ lấy "Chi phí".
-# 2. Doanh thu: Đọc dạng Text để không bị làm tròn số.
+# 1. Thêm Thẻ tên (Profile) cho từng nhân sự AI.
+# 2. Định danh lời thoại rõ ràng (An vs Sư).
 # ==============================================================================
 
 import streamlit as st
@@ -20,7 +20,7 @@ import io
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.3 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.4 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -84,46 +84,26 @@ def get_file_content(uploaded_file):
 # ==================================================
 
 def parse_vn_currency(val):
-    """Chuyển chuỗi tiền Việt thành số thực."""
     if pd.isna(val): return 0
     s = str(val).strip()
-    s = re.sub(r'[^\d.,]', '', s) # Chỉ giữ số, chấm, phẩy
-    
-    # Logic: Chấm là nghìn, Phẩy là thập phân (Chuẩn VN)
+    s = re.sub(r'[^\d.,]', '', s) 
     if '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.')
     elif '.' in s:
         parts = s.split('.')
-        # Nếu có nhiều chấm hoặc 3 số sau chấm -> Là hàng nghìn -> Xóa chấm
-        if len(parts) > 1 and (len(parts) > 2 or len(parts[-1]) == 3): 
-            s = s.replace('.', '')
+        if len(parts) > 1 and (len(parts) > 2 or len(parts[-1]) == 3): s = s.replace('.', '')
     elif ',' in s: s = s.replace(',', '.')
-
     try: return float(s)
     except: return 0.0
 
 def find_best_column(columns, keywords, blacklist=[]):
-    """
-    Tìm cột đúng nhất:
-    1. Ưu tiên khớp chính xác (Exact match).
-    2. Nếu không, tìm chứa từ khóa (Contains) NHƯNG KHÔNG chứa từ cấm (Blacklist).
-    """
     cols_lower = [str(c).lower().strip() for c in columns]
-    
-    # 1. Tìm chính xác
     for kw in keywords:
-        if kw in cols_lower:
-            return columns[cols_lower.index(kw)]
-            
-    # 2. Tìm chứa từ khóa (nhưng không chứa từ cấm)
+        if kw in cols_lower: return columns[cols_lower.index(kw)]
     for col in columns:
         c_low = str(col).lower()
-        # Phải chứa ít nhất 1 keyword
         if not any(k in c_low for k in keywords): continue
-        # VÀ không được chứa từ cấm nào
         if any(b in c_low for b in blacklist): continue
-        
-        return col # Tìm thấy cột hợp lệ đầu tiên
-        
+        return col
     return None
 
 def process_shopee_files(revenue_file, ads_file):
@@ -132,60 +112,35 @@ def process_shopee_files(revenue_file, ads_file):
     # --- XỬ LÝ DOANH THU ---
     if revenue_file:
         try:
-            # Đọc tất cả là String (dtype=str) để không bị lỗi làm tròn
             revenue_file.seek(0)
-            if revenue_file.name.endswith(('xls', 'xlsx')):
-                df = pd.read_excel(revenue_file, header=0, dtype=str)
-            else:
-                df = pd.read_csv(revenue_file, header=0, dtype=str, encoding='utf-8')
-        except:
-            logs.append("❌ Lỗi đọc file Doanh thu")
-            df = pd.DataFrame()
+            if revenue_file.name.endswith(('xls', 'xlsx')): df = pd.read_excel(revenue_file, header=0, dtype=str)
+            else: df = pd.read_csv(revenue_file, header=0, dtype=str, encoding='utf-8')
+        except: logs.append("❌ Lỗi đọc file Doanh thu"); df = pd.DataFrame()
 
         if not df.empty:
-            # Tìm cột Doanh thu
-            col_rev = find_best_column(
-                df.columns, 
-                keywords=["tổng doanh số (vnd)", "doanh số (vnd)", "tổng tiền", "doanh thu"],
-                blacklist=["thẻ sản phẩm", "livestream", "video", "liên kết"] # Tránh lấy các cột con
-            )
-            
+            col_rev = find_best_column(df.columns, keywords=["tổng doanh số (vnd)", "doanh số (vnd)", "tổng tiền", "doanh thu"], blacklist=["thẻ sản phẩm", "livestream", "video"])
             if col_rev:
-                # Lấy giá trị dòng đầu tiên (Dòng Tổng)
                 val = df[col_rev].iloc[0]
                 total_rev = parse_vn_currency(val)
-                logs.append(f"✅ Doanh thu: Lấy từ dòng 1 cột '{col_rev}' = {total_rev:,.0f}")
-            else:
-                logs.append(f"⚠️ Không tìm thấy cột Doanh thu. Có các cột: {list(df.columns)}")
+                logs.append(f"✅ Doanh thu: Dòng tổng '{col_rev}' = {total_rev:,.0f}")
+            else: logs.append(f"⚠️ Không tìm thấy cột Doanh thu.")
 
     # --- XỬ LÝ ADS ---
     if ads_file:
         try:
-            # Ads Header ở dòng 7 (skiprows=6)
             ads_file.seek(0)
-            if ads_file.name.endswith(('xls', 'xlsx')):
-                df_ads = pd.read_excel(ads_file, skiprows=6, dtype=str)
+            if ads_file.name.endswith(('xls', 'xlsx')): df_ads = pd.read_excel(ads_file, skiprows=6, dtype=str)
             else:
-                # Thử đọc CSV với UTF-16 (Shopee hay dùng) hoặc UTF-8
                 try: df_ads = pd.read_csv(ads_file, skiprows=6, dtype=str, encoding='utf-8')
                 except: df_ads = pd.read_csv(ads_file, skiprows=6, dtype=str, encoding='utf-16', sep='\t')
-        except:
-            logs.append("❌ Lỗi đọc file Ads")
-            df_ads = pd.DataFrame()
+        except: logs.append("❌ Lỗi đọc file Ads"); df_ads = pd.DataFrame()
 
         if not df_ads.empty:
-            # Tìm cột Chi phí (TRÁNH: chuyển đổi, trực tiếp, mỗi lượt)
-            col_cost = find_best_column(
-                df_ads.columns,
-                keywords=["chi phí", "cost"],
-                blacklist=["chuyển đổi", "trực tiếp", "mỗi lượt", "roas", "acos", "gmv"]
-            )
-            
+            col_cost = find_best_column(df_ads.columns, keywords=["chi phí", "cost"], blacklist=["chuyển đổi", "trực tiếp", "mỗi lượt", "roas"])
             if col_cost:
                 total_ads = df_ads[col_cost].apply(parse_vn_currency).sum()
-                logs.append(f"✅ Ads: Tổng cộng cột '{col_cost}' = {total_ads:,.0f}")
-            else:
-                logs.append(f"⚠️ Không tìm thấy cột Chi phí. Có các cột: {list(df_ads.columns)}")
+                logs.append(f"✅ Ads: Tổng cột '{col_cost}' = {total_ads:,.0f}")
+            else: logs.append(f"⚠️ Không tìm thấy cột Chi phí.")
 
     return total_rev, total_ads, logs
 
@@ -193,7 +148,7 @@ def process_shopee_files(revenue_file, ads_file):
 # 4. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.3")
+    st.title("🦅 BCM Cloud v4.4")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"])
@@ -214,24 +169,20 @@ with st.sidebar:
 # 5. LOGIC MODULES
 # ==================================================
 if menu == "📊 Báo Cáo & Excel":
-    st.title("📊 BÁO CÁO KINH DOANH (SMART SELECTOR)")
+    st.title("📊 BÁO CÁO KINH DOANH")
     d = st.date_input("Chọn tuần:", datetime.now())
-    
     with st.expander("📂 UPLOAD FILE SHOPEE", expanded=True):
         f1 = st.file_uploader("File Doanh Thu (Shop Stats)")
         f2 = st.file_uploader("File Quảng Cáo (Ads)")
-        
         if f1 or f2:
             rev, ads, debug_info = process_shopee_files(f1, f2)
             with st.expander("🔍 Nhật Ký Xử Lý (Log)", expanded=True):
                 for l in debug_info: st.write(l)
-
     st.divider()
     c1, c2, c3 = st.columns(3)
     nr = c1.number_input("Doanh thu", float(rev), step=1e5, format="%.0f")
     na = c2.number_input("Chi phí Ads", float(ads), step=5e4, format="%.0f")
     np = c3.number_input("Lợi nhuận Ròng (30%)", float(nr*0.3-na), step=5e4, format="%.0f")
-    
     if st.button("💾 LƯU & XUẤT EXCEL", type="primary"):
         fp = save_report_to_excel(d, nr, na, np)
         st.success(f"✅ Đã xuất báo cáo: {fp}")
@@ -240,7 +191,33 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
     st.header("🤖 PHÒNG HỌP CHIẾN LƯỢC")
     df_comp = get_competitors_df()
     comp_context = f"\n--- THỊ TRƯỜNG ---\n{df_comp.to_string()}\n" if not df_comp.empty else ""
-    role = st.radio("Nhân sự:", ["An (Kỹ sư)", "Sư (Cố vấn)"], horizontal=True)
+    
+    # --- PHẦN ĐỊNH DANH NHÂN SỰ (NEW) ---
+    col_role, col_info = st.columns([1, 3])
+    with col_role:
+        st.subheader("Chọn Nhân Sự:")
+        role = st.radio("Active:", ["An (Kỹ sư)", "Sư (Cố vấn)"], label_visibility="collapsed")
+    
+    with col_info:
+        if "An" in role:
+            st.info("""
+            **🔵 HỒ SƠ NHÂN SỰ: AN (ENGINEER)**
+            * **Vai trò:** Kỹ sư Công nghệ & Trợ lý vận hành.
+            * **Tính cách:** Trung thành, Lạc quan, Thực tế, Thích số liệu & Code.
+            * **Nhiệm vụ:** Giải quyết vấn đề kỹ thuật, tính toán, đưa giải pháp cụ thể.
+            """)
+            prefix = "[🤖 Kỹ Sư AN]:"
+            style_instruction = "Bạn là An. Hãy trả lời ngắn gọn, tập trung vào giải pháp kỹ thuật và con số."
+        else:
+            st.warning("""
+            **🟠 HỒ SƠ NHÂN SỰ: SƯ (ADVISOR)**
+            * **Vai trò:** Quân sư Chiến lược & Kiểm soát rủi ro.
+            * **Tính cách:** Đa nghi, Khắt khe, Thâm sâu (Binh pháp Tôn Tử).
+            * **Nhiệm vụ:** Phản biện, tìm lỗ hổng trong kế hoạch, cảnh báo rủi ro.
+            """)
+            prefix = "[👺 Quân Sư]:"
+            style_instruction = "Bạn là Quân Sư khó tính. Hãy soi xét vấn đề, tìm rủi ro và đưa ra lời khuyên chiến lược sắc bén."
+
     st.divider()
     
     if "messages" not in st.session_state: st.session_state.messages = []
@@ -249,8 +226,19 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
     if p := st.chat_input("Ra lệnh..."):
         st.session_state.messages.append({"role": "user", "content": p})
         st.chat_message("user").markdown(p)
+        
         base = f"{knowledge_context}\n{comp_context}" if 'knowledge_context' in locals() else comp_context
-        sys = f"Bạn là {role}. Dựa vào dữ liệu: {base}. Trả lời câu hỏi: {p}"
+        
+        # PROMPT KỸ THUẬT SỐ (Prompt Engineering)
+        sys = f"""
+        {style_instruction}
+        Hãy bắt đầu câu trả lời bằng cụm từ: "{prefix}"
+        
+        Dữ liệu tham khảo:
+        {base}
+        
+        Câu hỏi của Sếp Lâm: {p}
+        """
         
         with st.chat_message("assistant"):
             if AI_STATUS == "Online 🟢":
