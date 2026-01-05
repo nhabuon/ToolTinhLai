@@ -1,10 +1,9 @@
 # ==============================================================================
-# BCM CLOUD v4.6 - RECOVERY MODE (IMPORT/EXPORT EXCEL)
+# BCM CLOUD v4.7 - FULL IMPORT (ADVANCED WAREHOUSE)
 # Coder: BCM-Engineer (An) & Sếp Lâm
 # Update:
-# 1. Thêm chức năng Nhập kho hàng loạt từ file Excel (Cứu dữ liệu).
-# 2. Thêm chức năng Tải Database về máy (Backup).
-# 3. Giữ nguyên các tính năng AI & Xử lý Shopee cũ.
+# 1. Nhập kho từ Excel với đầy đủ 7 thông số (Tồn kho, Ship, Safety...).
+# 2. Tạo nút tải File Mẫu chuẩn để Sếp dễ nhập liệu.
 # ==============================================================================
 
 import streamlit as st
@@ -21,7 +20,7 @@ import io
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.6 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.7 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -52,19 +51,28 @@ def get_products_df(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELE
 def get_products_list(): df=get_products_df(); return df['name'].tolist() if not df.empty else []
 def get_my_price(n): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT selling_price FROM products WHERE name=?",(n,)); r=c.fetchone(); conn.close(); return r[0] if r else 0
 
-# Hàm thêm sản phẩm (Dùng cho cả nhập tay và nhập Excel)
-def add_product(n,c,p,d,l,s): 
-    t=int(d*l+s)
-    conn=sqlite3.connect(DB_FILE)
-    cur=conn.cursor()
-    # Kiểm tra xem sản phẩm đã có chưa để tránh trùng lặp
-    cur.execute("SELECT id FROM products WHERE name = ?", (n,))
+# --- NÂNG CẤP HÀM NHẬP KHO ĐẦY ĐỦ ---
+def add_product_full(name, cost, price, stock, daily, lead, safe): 
+    # Tính ngưỡng cảnh báo
+    threshold = int(daily * lead + safe)
+    conn = sqlite3.connect(DB_FILE)
+    cur = conn.cursor()
+    
+    # Kiểm tra tồn tại
+    cur.execute("SELECT id FROM products WHERE name = ?", (name,))
     exists = cur.fetchone()
+    
     if not exists:
-        cur.execute("INSERT INTO products (name,cost_price,selling_price,daily_sales,lead_time,safety_stock,alert_threshold) VALUES (?,?,?,?,?,?,?)",(n,c,p,d,l,s,t))
+        # Thêm mới đầy đủ
+        cur.execute("INSERT INTO products (name, cost_price, selling_price, stock_quantity, daily_sales, lead_time, safety_stock, alert_threshold) VALUES (?,?,?,?,?,?,?,?)", 
+                    (name, cost, price, stock, daily, lead, safe, threshold))
     else:
-        # Nếu có rồi thì cập nhật giá
-        cur.execute("UPDATE products SET cost_price=?, selling_price=?, daily_sales=?, lead_time=?, safety_stock=?, alert_threshold=? WHERE name=?", (c,p,d,l,s,t,n))
+        # Cập nhật thông tin (Nếu import đè)
+        cur.execute("""
+            UPDATE products 
+            SET cost_price=?, selling_price=?, stock_quantity=?, daily_sales=?, lead_time=?, safety_stock=?, alert_threshold=? 
+            WHERE name=?""", 
+            (cost, price, stock, daily, lead, safe, threshold, name))
     conn.commit(); conn.close()
 
 def update_stock(i,a): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE products SET stock_quantity=stock_quantity+? WHERE id=?",(a,i)); conn.commit(); conn.close()
@@ -75,8 +83,6 @@ def save_report_to_excel(date_obj, rev, ads, prof):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("REPLACE INTO financials (date, revenue, ad_spend, profit) VALUES (?, ?, ?, ?)", (start_date, rev, ads, prof)); conn.commit(); conn.close()
     data = {'Ngày Báo Cáo': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")], 'Tuần Kinh Doanh': [start_date], 'Doanh Thu': [rev], 'Chi Phí Ads': [ads], 'Lợi Nhuận': [prof]}
     df_new = pd.DataFrame(data)
-    # Trả về đường dẫn file để download, nhưng trên cloud file này cũng sẽ mất khi reboot
-    # Nên ta sẽ trả về dataframe để user download trực tiếp
     return df_new
 
 def get_file_content(uploaded_file):
@@ -120,7 +126,6 @@ def find_best_column(columns, keywords, blacklist=[]):
 
 def process_shopee_files(revenue_file, ads_file):
     total_rev = 0; total_ads = 0; logs = []
-    # (Giữ nguyên logic xử lý thông minh của v4.4)
     if revenue_file:
         try:
             revenue_file.seek(0)
@@ -158,12 +163,11 @@ def process_shopee_files(revenue_file, ads_file):
 # 4. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.6")
+    st.title("🦅 BCM Cloud v4.7")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Nhập Kho", "📦 Kho Hàng & Backup"])
     
-    # RAG MODULE
     if menu == "🤖 Phòng Họp Chiến Lược":
         st.markdown("---")
         st.subheader("📂 RAG (Nạp tài liệu)")
@@ -183,11 +187,11 @@ if menu == "📊 Báo Cáo & Excel":
     st.title("📊 BÁO CÁO KINH DOANH")
     d = st.date_input("Chọn tuần:", datetime.now())
     with st.expander("📂 UPLOAD FILE SHOPEE", expanded=True):
-        f1 = st.file_uploader("File Doanh Thu")
-        f2 = st.file_uploader("File Quảng Cáo")
+        f1 = st.file_uploader("File Doanh Thu (Shop Stats)")
+        f2 = st.file_uploader("File Quảng Cáo (Ads)")
         if f1 or f2:
             rev, ads, debug_info = process_shopee_files(f1, f2)
-            with st.expander("Log Xử Lý"):
+            with st.expander("🔍 Log Xử Lý"):
                 for l in debug_info: st.write(l)
     st.divider()
     c1, c2, c3 = st.columns(3)
@@ -195,7 +199,6 @@ if menu == "📊 Báo Cáo & Excel":
     na = c2.number_input("Chi phí Ads", float(ads), step=5e4, format="%.0f")
     np = c3.number_input("Lợi nhuận Ròng (30%)", float(nr*0.3-na), step=5e4, format="%.0f")
     
-    # Xuất Excel trực tiếp
     data = {'Ngày': [datetime.now().strftime("%Y-%m-%d")], 'Doanh Thu': [nr], 'Ads': [na], 'Lợi Nhuận': [np]}
     df_export = pd.DataFrame(data)
     csv = df_export.to_csv(index=False).encode('utf-8-sig')
@@ -238,7 +241,6 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
 
 elif menu == "⚔️ Rada Đối Thủ":
     st.title("⚔️ RADA ĐỐI THỦ")
-    # ... (Giữ nguyên logic cũ) ...
     with st.expander("Thêm Đối Thủ"):
         my_l = get_products_list()
         if my_l:
@@ -254,56 +256,83 @@ elif menu == "⚔️ Rada Đối Thủ":
 elif menu == "💰 Tính Lãi & Nhập Kho":
     st.title("💰 TÍNH LÃI & NHẬP KHO")
     
-    tab1, tab2 = st.tabs(["Thêm Lẻ (Từng SP)", "Nhập Excel (Hàng Loạt)"])
+    tab1, tab2 = st.tabs(["Thêm Lẻ (Từng SP)", "Nhập Excel (Full Data)"])
     
     with tab1:
         c1,c2,c3=st.columns(3)
         with c1: ten=st.text_input("Tên SP"); von=st.number_input("Giá Vốn", step=1000)
         with c2: ban=st.number_input("Giá Bán", step=1000); hop=st.number_input("Phí gói", 2000)
-        with c3: daily=st.number_input("Bán/ngày", 1.0); l=st.number_input("Ship (Ngày)", min_value=1, value=5); s=st.number_input("Safe", 5)
+        with c3: 
+            daily=st.number_input("Bán/ngày", 1.0)
+            l=st.number_input("Ship (Ngày)", min_value=1, value=5) # Đã set mặc định 5
+            s=st.number_input("Safe", 5)
         f=st.slider("Phí sàn %",0,30,16)
         if st.button("Tính & Lưu Kho"):
-            lai=b*(1-f/100)-v-h; add_product(n,v,b,d,l,s) if lai>0 else None
+            lai=ban*(1-f/100)-von-hop
+            add_product_full(ten, von, ban, 0, daily, l, s) # Thêm lẻ mặc định tồn=0
             st.metric("Lãi", f"{lai:,.0f}")
+            if lai>0: st.success("Đã lưu vào kho!")
             
     with tab2:
-        st.info("💡 Tải lên file Excel có các cột: `Tên`, `Vốn`, `Giá Bán`. An sẽ tự động nhập vào kho.")
-        f_excel = st.file_uploader("Chọn file Excel sản phẩm (.xlsx)")
-        if f_excel:
-            if st.button("🚀 Xử Lý Nhập Kho"):
-                try:
-                    df_in = pd.read_excel(f_excel)
-                    # Mapping cột (nếu tên cột gần đúng)
-                    count = 0
-                    for _, row in df_in.iterrows():
-                        # Giả định file có cột: Name, Cost, Price
-                        # Nếu không có thì lấy theo index cột 0, 1, 2
-                        try:
-                            n = str(row.iloc[0])
-                            c = float(row.iloc[1])
-                            p = float(row.iloc[2])
-                            # Các chỉ số phụ lấy mặc định
-                            add_product(n, c, p, 1.0, 5, 5)
-                            count += 1
-                        except: pass
-                    st.success(f"✅ Đã nhập thành công {count} sản phẩm vào kho!")
-                except Exception as e:
-                    st.error(f"Lỗi đọc file: {e}")
+        st.info("💡 **HƯỚNG DẪN:**")
+        
+        # Tạo file mẫu để user tải về
+        sample_data = {
+            'Tên sản phẩm': ['Robot T20', 'Nước lau sàn'],
+            'Giá vốn': [8000000, 150000],
+            'Giá bán': [12000000, 250000],
+            'Tồn kho': [10, 50],
+            'Ship (Ngày)': [5, 5],
+            'Bán/Ngày': [2, 5],
+            'Tồn An Toàn': [5, 10]
+        }
+        df_sample = pd.DataFrame(sample_data)
+        csv_sample = df_sample.to_csv(index=False).encode('utf-8-sig')
+        
+        col_down, col_up = st.columns([1, 2])
+        with col_down:
+            st.download_button(
+                label="📥 Tải File Mẫu",
+                data=csv_sample,
+                file_name="mau_nhap_kho_bcm.csv",
+                mime="text/csv",
+            )
+        
+        with col_up:
+            f_excel = st.file_uploader("Upload File đã điền (.csv/.xlsx)")
+            if f_excel:
+                if st.button("🚀 Xử Lý Nhập Kho"):
+                    try:
+                        if f_excel.name.endswith('csv'): df_in = pd.read_csv(f_excel)
+                        else: df_in = pd.read_excel(f_excel)
+                        
+                        count = 0
+                        # Mapping cột thông minh
+                        # Ưu tiên tìm tên cột tiếng Việt, nếu không có thì lấy theo thứ tự cột 0,1,2,3...
+                        for _, row in df_in.iterrows():
+                            try:
+                                # Logic mapping: Lấy theo tên cột nếu có, không thì lấy index
+                                n = row.get('Tên sản phẩm', row.iloc[0])
+                                c = float(row.get('Giá vốn', row.iloc[1]))
+                                p = float(row.get('Giá bán', row.iloc[2]))
+                                stk = int(row.get('Tồn kho', row.iloc[3])) if len(row) > 3 else 0
+                                ship = int(row.get('Ship (Ngày)', row.iloc[4])) if len(row) > 4 else 5
+                                dly = float(row.get('Bán/Ngày', row.iloc[5])) if len(row) > 5 else 1.0
+                                sfe = int(row.get('Tồn An Toàn', row.iloc[6])) if len(row) > 6 else 5
+                                
+                                add_product_full(n, c, p, stk, dly, ship, sfe)
+                                count += 1
+                            except: pass
+                        st.success(f"✅ Đã nhập thành công {count} sản phẩm!")
+                    except Exception as e:
+                        st.error(f"Lỗi: {e}")
 
 elif menu == "📦 Kho Hàng & Backup":
     st.title("📦 QUẢN LÝ KHO & BACKUP")
-    
-    # Nút Backup quan trọng
     df = get_products_df()
     if not df.empty:
         csv = df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="💾 SAO LƯU DỮ LIỆU KHO (Tải về máy ngay)",
-            data=csv,
-            file_name="kho_hang_backup.csv",
-            mime="text/csv",
-            type="primary"
-        )
+        st.download_button("💾 SAO LƯU TOÀN BỘ KHO", csv, "kho_hang_backup.csv", "text/csv", type="primary")
         st.markdown("---")
         st.dataframe(df, use_container_width=True)
     else:
