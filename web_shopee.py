@@ -10,20 +10,31 @@ st.set_page_config(page_title="BCM Cloud v3.6 - MIT Corp", page_icon="🦅", lay
 
 # Lấy API Key từ Secrets
 try:
-    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
-except:
-    st.error("⚠️ Chưa cấu hình GOOGLE_API_KEY trong Secrets!")
+    if "GOOGLE_API_KEY" in st.secrets:
+        genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+    else:
+        st.error("⚠️ Chưa cấu hình GOOGLE_API_KEY trong Secrets!")
+        st.stop()
+except Exception as e:
+    st.error(f"Lỗi cấu hình API: {e}")
     st.stop()
 
-# Cấu hình Model (Dùng bản 1.5 Pro hoặc bản mới nhất Sếp muốn)
-# Lưu ý: Sếp có thể đổi tên model thành 'gemini-1.5-flash' nếu muốn tốc độ nhanh hơn
+# Cấu hình Model (Đã cập nhật theo chỉ đạo của Sếp: Gemini 3.0 Pro Preview)
 MODEL_CONFIG = {
     "temperature": 0.7,
     "top_p": 0.95,
     "top_k": 64,
     "max_output_tokens": 8192,
 }
-model = genai.GenerativeModel('gemini-3-pro-preview', generation_config=MODEL_CONFIG)
+
+# 👉 ĐÃ CẬP NHẬT TÊN MODEL TẠI ĐÂY
+model_name = "gemini-3-pro-preview" 
+
+try:
+    model = genai.GenerativeModel(model_name, generation_config=MODEL_CONFIG)
+except Exception as e:
+    st.warning(f"⚠️ Không tìm thấy model '{model_name}'. Đang chuyển về 'gemini-1.5-pro' để dự phòng.")
+    model = genai.GenerativeModel('gemini-1.5-pro', generation_config=MODEL_CONFIG)
 
 # ==============================================================================
 # 2. HÀM XỬ LÝ FILE (KNOWLEDGE BASE)
@@ -51,6 +62,7 @@ def get_file_content(uploaded_file):
 # ==============================================================================
 with st.sidebar:
     st.title("🦅 BCM Cloud v3.6")
+    st.caption(f"Engine: {model_name}") # Hiển thị tên model đang chạy
     st.markdown("---")
     
     # --- CHỌN NHÂN SỰ ---
