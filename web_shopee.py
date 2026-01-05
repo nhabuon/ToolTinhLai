@@ -1,7 +1,7 @@
 # ==============================================================================
-# BCM CLOUD v3.9 - ULTRA SAFE MODE (FIX ENCODING ERROR)
+# BCM CLOUD v4.0 - FINAL WEAPON (LINE SCANNER TECH)
 # Coder: BCM-Engineer (An) & Sếp Lâm
-# Update: Tự động dò bảng mã (UTF-8/UTF-16) cho file CSV Shopee
+# Update: Fix lỗi file CSV có cấu trúc dòng không đồng nhất (ParserError)
 # ==============================================================================
 
 import streamlit as st
@@ -14,11 +14,12 @@ from pypdf import PdfReader
 from docx import Document
 import re
 import io
+import csv
 
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v3.9 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.0 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -27,15 +28,14 @@ try:
     if "GOOGLE_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
         AI_STATUS = "Online 🟢"
-    else: pass
 except: pass
 
-MODEL_NAME = "gemini-3-pro-preview" 
+MODEL_NAME = "gemini-3-pro-preview"
 DB_FILE = "shopee_data_v3.db"
 REPORT_FILE = "BAO_CAO_KINH_DOANH.xlsx"
 
 # ==================================================
-# 2. HÀM DATABASE & RAG (GIỮ NGUYÊN)
+# 2. HÀM DATABASE (GIỮ NGUYÊN)
 # ==================================================
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -79,125 +79,117 @@ def get_file_content(uploaded_file):
     return text
 
 # ==================================================
-# 3. TRÁI TIM XỬ LÝ FILE (ĐÃ NÂNG CẤP BẢO MẬT)
+# 3. TRÁI TIM XỬ LÝ FILE (CÔNG NGHỆ SCAN LINE)
 # ==================================================
 
 def convert_vn_currency(val):
-    """Chuyển đổi tiền tệ kiểu VN: 14.267.984 -> 14267984.0"""
+    """Chuyển tiền VN: 14.267.984 -> 14267984"""
     if pd.isna(val): return 0
     s = str(val)
-    s = re.sub(r'[^\d.,-]', '', s) # Chỉ giữ lại số và dấu
+    s = re.sub(r'[^\d.,-]', '', s) 
     
-    # Logic: Nếu có nhiều dấu chấm (14.267.984) -> Xóa chấm
-    if s.count('.') > 1:
-        s = s.replace('.', '')
-    elif '.' in s and ',' in s: 
-        # 1.200,50 -> 1200.50
-        s = s.replace('.', '').replace(',', '.')
-    elif ',' in s:
-        # 123,45 -> 123.45
-        s = s.replace(',', '.')
-    # Nếu chỉ có 1 dấu chấm (123.456), Shopee thường là hàng nghìn nếu là VND
-    elif '.' in s:
+    # Logic đoán dấu
+    if s.count('.') > 1: s = s.replace('.', '') # 14.267.984
+    elif '.' in s and ',' in s: s = s.replace('.', '').replace(',', '.') # 1.200,50
+    elif ',' in s: s = s.replace(',', '.') # 123,45
+    elif '.' in s: # 123.456 (Giả định là nghìn nếu 3 số sau chấm)
         parts = s.split('.')
-        if len(parts[1]) == 3: s = s.replace('.', '')
+        if len(parts) > 1 and len(parts[-1]) == 3: s = s.replace('.', '')
         
     try: return float(s)
     except: return 0
 
-def robust_read_csv(file):
-    """Đọc CSV với mọi loại bảng mã"""
-    encodings = ['utf-8', 'utf-8-sig', 'utf-16', 'latin1', 'cp1252']
-    file_content = file.getvalue()
+def scan_file_for_header(file):
+    """
+    Đọc file như văn bản thuần túy để tìm dòng tiêu đề.
+    Tránh lỗi 'ParserError' của pandas khi số cột không đều.
+    """
+    encodings = ['utf-8', 'utf-16', 'latin1', 'utf-8-sig']
+    content = file.getvalue()
     
+    decoded_lines = []
+    used_encoding = 'utf-8'
+    
+    # 1. Thử giải mã file
     for enc in encodings:
         try:
-            file.seek(0)
-            df = pd.read_csv(io.BytesIO(file_content), header=None, nrows=20, encoding=enc)
-            # Nếu đọc được thì trả về dataframe và encoding đã dùng
-            return df, enc
-        except:
-            continue
-    return None, None
-
-def smart_read_file(file):
-    """Đọc file CSV/Excel và tự tìm tiêu đề"""
-    try:
-        df_temp = None
-        encoding_used = 'utf-8'
+            decoded_lines = content.decode(enc).splitlines()
+            used_encoding = enc
+            break
+        except: continue
         
-        # 1. Thử đọc Excel
-        try:
-            file.seek(0)
-            df_temp = pd.read_excel(file, header=None, nrows=20)
-        except:
-            # 2. Nếu lỗi, thử đọc CSV "bất tử"
-            df_temp, encoding_used = robust_read_csv(file)
+    if not decoded_lines: return None, 0, "Không đọc được encoding"
+
+    # 2. Quét tìm dòng tiêu đề
+    # Từ khóa nhận diện header chuẩn của Shopee
+    keywords = ["tổng doanh số (vnd)", "mã đơn hàng", "chi phí", "tên dịch vụ hiển thị", "ngày đặt hàng", "tổng tiền", "ngày"]
+    
+    header_idx = -1
+    for i, line in enumerate(decoded_lines[:30]): # Chỉ quét 30 dòng đầu
+        line_lower = line.lower()
+        if any(k in line_lower for k in keywords):
+            header_idx = i
+            break
             
-        if df_temp is None: return None, "Không đọc được file (Lỗi Encoding)"
+    if header_idx == -1: return None, 0, "Không tìm thấy từ khóa tiêu đề"
 
-        # 3. Tìm dòng tiêu đề
-        header_idx = 0
-        keywords = ["mã đơn hàng", "tổng doanh số", "doanh thu", "chi phí", "tên dịch vụ hiển thị", "ngày đặt hàng", "tổng tiền"]
-        
-        for idx, row in df_temp.iterrows():
-            row_str = " ".join(row.astype(str).str.lower())
-            if any(k in row_str for k in keywords):
-                header_idx = idx
-                break
-        
-        # 4. Đọc lại file (Full)
-        file.seek(0)
-        try:
-            if file.name.endswith(('xls', 'xlsx')):
-                df = pd.read_excel(file, header=header_idx)
-            else:
-                df = pd.read_csv(file, header=header_idx, encoding=encoding_used)
-            return df, header_idx
-        except Exception as e:
-            return None, str(e)
-
+    # 3. Đọc pandas từ dòng đó
+    file.seek(0)
+    try:
+        if file.name.endswith(('xls', 'xlsx')):
+            df = pd.read_excel(file, header=header_idx)
+        else:
+            # Dùng đúng encoding đã tìm được
+            df = pd.read_csv(file, header=header_idx, encoding=used_encoding, on_bad_lines='skip')
+        return df, header_idx, "OK"
     except Exception as e:
-        return None, str(e)
+        return None, 0, str(e)
 
 def process_shopee_files(revenue_file, ads_file):
-    total_rev = 0
-    total_ads = 0
+    total_rev = 0; total_ads = 0
     logs = []
 
-    # Xử lý Doanh Thu
+    # --- XỬ LÝ DOANH THU ---
     if revenue_file:
-        df, h_idx = smart_read_file(revenue_file)
-        if df is not None and isinstance(df, pd.DataFrame):
-            logs.append(f"✅ Doanh Thu: Đọc thành công (Header dòng {h_idx+1})")
+        df, h_idx, status = scan_file_for_header(revenue_file)
+        if df is not None:
+            logs.append(f"✅ Doanh Thu: Header dòng {h_idx+1}")
+            # Tìm cột tiền
             col_target = None
-            kw_rev = ["tổng doanh số", "doanh số (vnd)", "thành tiền", "doanh thu", "tổng tiền"]
+            # Cột chính xác trong file mẫu của Sếp là "Tổng doanh số (VND)"
+            kw_rev = ["tổng doanh số (vnd)", "doanh số (vnd)", "tổng tiền", "doanh thu", "thành tiền"]
             for col in df.columns:
                 if any(k in str(col).lower() for k in kw_rev):
                     col_target = col
                     break
+            
             if col_target:
-                logs.append(f"👉 Cột tiền: '{col_target}'")
+                logs.append(f"👉 Cột tiền: {col_target}")
                 total_rev = df[col_target].apply(convert_vn_currency).sum()
-            else: logs.append("⚠️ Không tìm thấy cột Doanh thu!")
-        else: logs.append(f"❌ Lỗi file Doanh thu: {h_idx}")
+            else:
+                logs.append(f"⚠️ Không thấy cột tiền. Các cột có: {list(df.columns)}")
+        else: logs.append(f"❌ Lỗi Doanh Thu: {status}")
 
-    # Xử lý Ads
+    # --- XỬ LÝ ADS ---
     if ads_file:
-        df, h_idx = smart_read_file(ads_file)
-        if df is not None and isinstance(df, pd.DataFrame):
-            logs.append(f"✅ Ads: Đọc thành công (Header dòng {h_idx+1})")
+        df, h_idx, status = scan_file_for_header(ads_file)
+        if df is not None:
+            logs.append(f"✅ Ads: Header dòng {h_idx+1}")
+            # Tìm cột chi phí
             col_target = None
+            # Cột chính xác trong file mẫu là "Chi phí"
             kw_ads = ["chi phí", "cost", "tiền chạy"]
             for col in df.columns:
                 if any(k in str(col).lower() for k in kw_ads):
                     col_target = col
                     break
+            
             if col_target:
-                logs.append(f"👉 Cột chi phí: '{col_target}'")
+                logs.append(f"👉 Cột chi phí: {col_target}")
                 total_ads = df[col_target].apply(convert_vn_currency).sum()
-            else: logs.append("⚠️ Không tìm thấy cột Chi phí!")
-        else: logs.append(f"❌ Lỗi file Ads: {h_idx}")
+            else:
+                logs.append(f"⚠️ Không thấy cột phí. Các cột có: {list(df.columns)}")
+        else: logs.append(f"❌ Lỗi Ads: {status}")
 
     return total_rev, total_ads, logs
 
@@ -205,7 +197,7 @@ def process_shopee_files(revenue_file, ads_file):
 # 4. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v3.9")
+    st.title("🦅 BCM Cloud v4.0")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Thêm Mới", "📦 Kho Hàng"])
@@ -227,7 +219,8 @@ with st.sidebar:
 # ==================================================
 
 if menu == "📊 Báo Cáo & Excel":
-    st.title("📊 BÁO CÁO KINH DOANH (ULTRA FIX)")
+    st.title("📊 BÁO CÁO KINH DOANH (SCANNER MODE)")
+    st.info("💡 Hỗ trợ mọi loại file lỗi cấu trúc, tự động tìm dòng tiêu đề.")
     d = st.date_input("Chọn tuần:", datetime.now())
     
     with st.expander("📂 UPLOAD FILE SHOPEE", expanded=True):
@@ -236,8 +229,9 @@ if menu == "📊 Báo Cáo & Excel":
         
         if f1 or f2:
             rev, ads, debug_info = process_shopee_files(f1, f2)
-            with st.expander("🔍 Log Xử Lý"):
+            with st.expander("🔍 Kiểm tra Nhật Ký Xử Lý (Log)"):
                 for l in debug_info: st.write(l)
+                if rev == 0 and ads == 0: st.error("Vẫn chưa đọc được số liệu. Hãy chụp màn hình bảng log này gửi An!")
 
     st.divider()
     c1, c2, c3 = st.columns(3)
