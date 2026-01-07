@@ -1,9 +1,9 @@
 # ==============================================================================
-# BCM CLOUD v4.8 - EXCEL STANDARD (USER FRIENDLY)
+# BCM CLOUD v4.9 - WORD EXPORT (DOCUMENTATION MODE)
 # Coder: BCM-Engineer (An) & Sếp Lâm
 # Update:
-# 1. File mẫu chuyển sang định dạng .xlsx để dễ nhập liệu.
-# 2. Tối ưu hóa quy trình Import/Export.
+# 1. Thêm tính năng xuất câu trả lời của AI ra file Word (.docx) chuyên nghiệp.
+# 2. Giữ nguyên toàn bộ tính năng Kho hàng, Shopee, Excel Import.
 # ==============================================================================
 
 import streamlit as st
@@ -13,14 +13,14 @@ from datetime import datetime, timedelta
 import os
 import google.generativeai as genai
 from pypdf import PdfReader
-from docx import Document
+from docx import Document # Cần thêm thư viện này
 import re
 import io
 
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.8 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.9 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -71,12 +71,6 @@ def add_product_full(name, cost, price, stock, daily, lead, safe):
 def update_stock(i,a): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE products SET stock_quantity=stock_quantity+? WHERE id=?",(a,i)); conn.commit(); conn.close()
 def add_competitor(m,c,u,p): d=datetime.now().strftime("%Y-%m-%d"); conn=sqlite3.connect(DB_FILE); cur=conn.cursor(); cur.execute("INSERT INTO competitors (my_product_name,comp_name,comp_url,comp_price,last_check) VALUES (?,?,?,?,?)",(m,c,u,p,d)); conn.commit(); conn.close()
 def get_competitors_df(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM competitors", conn); conn.close(); return df
-def save_report_to_excel(date_obj, rev, ads, prof):
-    start_date = (date_obj - timedelta(days=date_obj.weekday())).strftime("%Y-%m-%d")
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("REPLACE INTO financials (date, revenue, ad_spend, profit) VALUES (?, ?, ?, ?)", (start_date, rev, ads, prof)); conn.commit(); conn.close()
-    data = {'Ngày Báo Cáo': [datetime.now().strftime("%Y-%m-%d %H:%M:%S")], 'Tuần Kinh Doanh': [start_date], 'Doanh Thu': [rev], 'Chi Phí Ads': [ads], 'Lợi Nhuận': [prof]}
-    df_new = pd.DataFrame(data)
-    return df_new
 
 def get_file_content(uploaded_file):
     text = ""
@@ -92,7 +86,33 @@ def get_file_content(uploaded_file):
     return text
 
 # ==================================================
-# 3. LOGIC XỬ LÝ SỐ LIỆU SHOPEE
+# 3. HÀM TẠO FILE WORD (MỚI)
+# ==================================================
+def create_word_docx(role_name, content):
+    doc = Document()
+    doc.add_heading('BIÊN BẢN HỌP CHIẾN LƯỢC - BCM CLOUD', 0)
+    
+    p = doc.add_paragraph()
+    p.add_run(f'Thời gian: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}\n').bold = True
+    p.add_run(f'Tham vấn: {role_name}\n').bold = True
+    p.add_run('--------------------------------------------------')
+    
+    doc.add_heading('NỘI DUNG PHÂN TÍCH:', level=1)
+    # Tách đoạn để văn bản đẹp hơn
+    for line in content.split('\n'):
+        doc.add_paragraph(line)
+        
+    doc.add_paragraph('--------------------------------------------------')
+    doc.add_paragraph('Báo cáo được tạo tự động bởi hệ thống BCM Cloud.')
+    
+    # Lưu vào buffer
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer
+
+# ==================================================
+# 4. LOGIC XỬ LÝ SỐ LIỆU SHOPEE
 # ==================================================
 def parse_vn_currency(val):
     if pd.isna(val): return 0
@@ -153,10 +173,10 @@ def process_shopee_files(revenue_file, ads_file):
     return total_rev, total_ads, logs
 
 # ==================================================
-# 4. GIAO DIỆN CHÍNH
+# 5. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.8")
+    st.title("🦅 BCM Cloud v4.9")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Nhập Kho", "📦 Kho Hàng & Backup"])
@@ -174,7 +194,7 @@ with st.sidebar:
                 status.update(label="Đã học xong!", state="complete", expanded=False)
 
 # ==================================================
-# 5. LOGIC MODULES
+# 6. LOGIC MODULES
 # ==================================================
 if menu == "📊 Báo Cáo & Excel":
     st.title("📊 BÁO CÁO KINH DOANH")
@@ -192,14 +212,13 @@ if menu == "📊 Báo Cáo & Excel":
     na = c2.number_input("Chi phí Ads", float(ads), step=5e4, format="%.0f")
     np = c3.number_input("Lợi nhuận Ròng (30%)", float(nr*0.3-na), step=5e4, format="%.0f")
     
-    # Export Excel Xịn
+    # Export Excel
     output = io.BytesIO()
     data = {'Ngày': [datetime.now().strftime("%Y-%m-%d")], 'Doanh Thu': [nr], 'Ads': [na], 'Lợi Nhuận': [np]}
     df_export = pd.DataFrame(data)
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_export.to_excel(writer, index=False, sheet_name='BaoCao')
     excel_data = output.getvalue()
-    
     st.download_button("💾 TẢI BÁO CÁO (.xlsx)", excel_data, "bao_cao_ngay.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
 
 elif menu == "🤖 Phòng Họp Chiến Lược":
@@ -214,10 +233,12 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
             st.info("**🔵 AN (ENGINEER):** Giải pháp kỹ thuật, tính toán, code.")
             prefix = "[🤖 Kỹ Sư AN]:"
             style = "Bạn là An. Trả lời ngắn gọn, kỹ thuật, con số."
+            current_role_name = "Kỹ Sư An"
         else:
             st.warning("**🟠 SƯ (ADVISOR):** Chiến lược, phản biện, rủi ro.")
             prefix = "[👺 Quân Sư]:"
             style = "Bạn là Quân Sư. Soi xét, tìm rủi ro, chiến lược."
+            current_role_name = "Quân Sư"
 
     st.divider()
     if "messages" not in st.session_state: st.session_state.messages = []
@@ -234,6 +255,17 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
                     res = genai.GenerativeModel(MODEL_NAME).generate_content(sys).text
                     st.markdown(res)
                     st.session_state.messages.append({"role": "assistant", "content": res})
+                    
+                    # --- TÍNH NĂNG MỚI: TẠO FILE WORD NGAY LẬP TỨC ---
+                    docx_file = create_word_docx(current_role_name, res)
+                    st.download_button(
+                        label="💾 TẢI BẢN WORD (.docx)",
+                        data=docx_file,
+                        file_name=f"bien_ban_hop_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"dl_{len(st.session_state.messages)}"
+                    )
+                    
                 except Exception as e: st.error(str(e))
             else: st.error("AI Offline")
 
@@ -253,9 +285,7 @@ elif menu == "⚔️ Rada Đối Thủ":
 
 elif menu == "💰 Tính Lãi & Nhập Kho":
     st.title("💰 TÍNH LÃI & NHẬP KHO")
-    
     tab1, tab2 = st.tabs(["Thêm Lẻ", "Nhập Excel (Full Data)"])
-    
     with tab1:
         c1,c2,c3=st.columns(3)
         with c1: ten=st.text_input("Tên SP"); von=st.number_input("Giá Vốn", step=1000)
@@ -270,35 +300,15 @@ elif menu == "💰 Tính Lãi & Nhập Kho":
             add_product_full(ten, von, ban, 0, daily, l, s) 
             st.metric("Lãi", f"{lai:,.0f}")
             if lai>0: st.success("Đã lưu vào kho!")
-            
     with tab2:
-        st.info("💡 **HƯỚNG DẪN:** Tải file mẫu .xlsx -> Điền số liệu -> Upload lại.")
-        
-        # TẠO FILE EXCEL MẪU (XỊN)
         output = io.BytesIO()
-        sample_data = {
-            'Tên sản phẩm': ['Robot T20', 'Nước lau sàn'],
-            'Giá vốn': [8000000, 150000],
-            'Giá bán': [12000000, 250000],
-            'Tồn kho': [10, 50],
-            'Ship (Ngày)': [5, 5],
-            'Bán/Ngày': [2, 5],
-            'Tồn An Toàn': [5, 10]
-        }
+        sample_data = {'Tên sản phẩm': ['Robot T20'], 'Giá vốn': [8000000], 'Giá bán': [12000000], 'Tồn kho': [10], 'Ship (Ngày)': [5], 'Bán/Ngày': [2], 'Tồn An Toàn': [5]}
         df_sample = pd.DataFrame(sample_data)
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df_sample.to_excel(writer, index=False, sheet_name='NhapKho')
+        with pd.ExcelWriter(output, engine='openpyxl') as writer: df_sample.to_excel(writer, index=False, sheet_name='NhapKho')
         xlsx_sample = output.getvalue()
         
         col_down, col_up = st.columns([1, 2])
-        with col_down:
-            st.download_button(
-                label="📥 Tải File Mẫu (.xlsx)",
-                data=xlsx_sample,
-                file_name="mau_nhap_kho_bcm.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
-        
+        with col_down: st.download_button("📥 Tải File Mẫu (.xlsx)", xlsx_sample, "mau_nhap_kho.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         with col_up:
             f_excel = st.file_uploader("Upload File (.xlsx / .csv)")
             if f_excel:
@@ -306,11 +316,9 @@ elif menu == "💰 Tính Lãi & Nhập Kho":
                     try:
                         if f_excel.name.endswith('csv'): df_in = pd.read_csv(f_excel)
                         else: df_in = pd.read_excel(f_excel)
-                        
                         count = 0
                         for _, row in df_in.iterrows():
                             try:
-                                # Logic mapping an toàn
                                 n = row.get('Tên sản phẩm', row.iloc[0])
                                 c = float(row.get('Giá vốn', row.iloc[1]))
                                 p = float(row.get('Giá bán', row.iloc[2]))
@@ -318,26 +326,20 @@ elif menu == "💰 Tính Lãi & Nhập Kho":
                                 ship = int(row.get('Ship (Ngày)', row.iloc[4])) if len(row) > 4 else 5
                                 dly = float(row.get('Bán/Ngày', row.iloc[5])) if len(row) > 5 else 1.0
                                 sfe = int(row.get('Tồn An Toàn', row.iloc[6])) if len(row) > 6 else 5
-                                
                                 add_product_full(n, c, p, stk, dly, ship, sfe)
                                 count += 1
                             except: pass
-                        st.success(f"✅ Đã nhập thành công {count} sản phẩm!")
-                    except Exception as e:
-                        st.error(f"Lỗi: {e}")
+                        st.success(f"✅ Đã nhập {count} sản phẩm!")
+                    except Exception as e: st.error(f"Lỗi: {e}")
 
 elif menu == "📦 Kho Hàng & Backup":
     st.title("📦 QUẢN LÝ KHO & BACKUP")
     df = get_products_df()
     if not df.empty:
-        # Export Excel Xịn cho Backup luôn
         output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Backup')
+        with pd.ExcelWriter(output, engine='openpyxl') as writer: df.to_excel(writer, index=False, sheet_name='Backup')
         xlsx_backup = output.getvalue()
-        
         st.download_button("💾 SAO LƯU DỮ LIỆU (.xlsx)", xlsx_backup, "kho_hang_backup.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
         st.markdown("---")
         st.dataframe(df, use_container_width=True)
-    else:
-        st.warning("Kho đang trống.")
+    else: st.warning("Kho đang trống.")
