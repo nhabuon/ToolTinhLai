@@ -1,9 +1,9 @@
 # ==============================================================================
-# BCM CLOUD v4.9 - WORD EXPORT (DOCUMENTATION MODE)
+# BCM CLOUD v4.9.1 - STABLE VERSION (FIX BUGS)
 # Coder: BCM-Engineer (An) & Sếp Lâm
 # Update:
-# 1. Thêm tính năng xuất câu trả lời của AI ra file Word (.docx) chuyên nghiệp.
-# 2. Giữ nguyên toàn bộ tính năng Kho hàng, Shopee, Excel Import.
+# 1. Sửa lỗi đỏ (UnboundLocalError) khi chưa upload file.
+# 2. Tích hợp đầy đủ: Word Export, Excel Import, Backup.
 # ==============================================================================
 
 import streamlit as st
@@ -13,14 +13,14 @@ from datetime import datetime, timedelta
 import os
 import google.generativeai as genai
 from pypdf import PdfReader
-from docx import Document # Cần thêm thư viện này
+from docx import Document
 import re
 import io
 
 # ==================================================
 # 1. CẤU HÌNH HỆ THỐNG
 # ==================================================
-st.set_page_config(page_title="BCM Cloud v4.9 - MIT Corp", page_icon="🦅", layout="wide")
+st.set_page_config(page_title="BCM Cloud v4.9.1 - MIT Corp", page_icon="🦅", layout="wide")
 st.markdown("""<style>.stMetric {background-color: #f0f2f6; padding: 10px; border-radius: 5px;} [data-testid="stMetricValue"] {font-size: 1.5rem !important;}</style>""", unsafe_allow_html=True)
 
 # Lấy API Key
@@ -33,7 +33,6 @@ except: pass
 
 MODEL_NAME = "gemini-3-pro-preview"
 DB_FILE = "shopee_data_v3.db"
-REPORT_FILE = "BAO_CAO_KINH_DOANH.xlsx"
 
 # ==================================================
 # 2. HÀM DATABASE
@@ -49,7 +48,6 @@ init_db()
 
 def get_products_df(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM products", conn); conn.close(); return df
 def get_products_list(): df=get_products_df(); return df['name'].tolist() if not df.empty else []
-def get_my_price(n): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT selling_price FROM products WHERE name=?",(n,)); r=c.fetchone(); conn.close(); return r[0] if r else 0
 
 def add_product_full(name, cost, price, stock, daily, lead, safe): 
     threshold = int(daily * lead + safe)
@@ -68,7 +66,6 @@ def add_product_full(name, cost, price, stock, daily, lead, safe):
             (cost, price, stock, daily, lead, safe, threshold, name))
     conn.commit(); conn.close()
 
-def update_stock(i,a): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE products SET stock_quantity=stock_quantity+? WHERE id=?",(a,i)); conn.commit(); conn.close()
 def add_competitor(m,c,u,p): d=datetime.now().strftime("%Y-%m-%d"); conn=sqlite3.connect(DB_FILE); cur=conn.cursor(); cur.execute("INSERT INTO competitors (my_product_name,comp_name,comp_url,comp_price,last_check) VALUES (?,?,?,?,?)",(m,c,u,p,d)); conn.commit(); conn.close()
 def get_competitors_df(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM competitors", conn); conn.close(); return df
 
@@ -86,26 +83,20 @@ def get_file_content(uploaded_file):
     return text
 
 # ==================================================
-# 3. HÀM TẠO FILE WORD (MỚI)
+# 3. HÀM TẠO FILE WORD
 # ==================================================
 def create_word_docx(role_name, content):
     doc = Document()
     doc.add_heading('BIÊN BẢN HỌP CHIẾN LƯỢC - BCM CLOUD', 0)
-    
     p = doc.add_paragraph()
     p.add_run(f'Thời gian: {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}\n').bold = True
     p.add_run(f'Tham vấn: {role_name}\n').bold = True
     p.add_run('--------------------------------------------------')
-    
     doc.add_heading('NỘI DUNG PHÂN TÍCH:', level=1)
-    # Tách đoạn để văn bản đẹp hơn
     for line in content.split('\n'):
         doc.add_paragraph(line)
-        
     doc.add_paragraph('--------------------------------------------------')
     doc.add_paragraph('Báo cáo được tạo tự động bởi hệ thống BCM Cloud.')
-    
-    # Lưu vào buffer
     buffer = io.BytesIO()
     doc.save(buffer)
     buffer.seek(0)
@@ -176,7 +167,7 @@ def process_shopee_files(revenue_file, ads_file):
 # 5. GIAO DIỆN CHÍNH
 # ==================================================
 with st.sidebar:
-    st.title("🦅 BCM Cloud v4.9")
+    st.title("🦅 BCM Cloud v4.9.1")
     st.caption(f"Engine: {MODEL_NAME} | Status: {AI_STATUS}")
     st.markdown("---")
     menu = st.radio("Menu:", ["🤖 Phòng Họp Chiến Lược", "📊 Báo Cáo & Excel", "⚔️ Rada Đối Thủ", "💰 Tính Lãi & Nhập Kho", "📦 Kho Hàng & Backup"])
@@ -202,10 +193,17 @@ if menu == "📊 Báo Cáo & Excel":
     with st.expander("📂 UPLOAD FILE SHOPEE", expanded=True):
         f1 = st.file_uploader("File Doanh Thu (Shop Stats)")
         f2 = st.file_uploader("File Quảng Cáo (Ads)")
+        
+        # --- KHỞI TẠO BIẾN ĐỂ TRÁNH LỖI KHI CHƯA CÓ FILE ---
+        rev = 0
+        ads = 0
+        debug_info = []
+        
         if f1 or f2:
             rev, ads, debug_info = process_shopee_files(f1, f2)
             with st.expander("🔍 Log Xử Lý"):
                 for l in debug_info: st.write(l)
+                
     st.divider()
     c1, c2, c3 = st.columns(3)
     nr = c1.number_input("Doanh thu", float(rev), step=1e5, format="%.0f")
@@ -256,7 +254,7 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
                     st.markdown(res)
                     st.session_state.messages.append({"role": "assistant", "content": res})
                     
-                    # --- TÍNH NĂNG MỚI: TẠO FILE WORD NGAY LẬP TỨC ---
+                    # Tải file Word
                     docx_file = create_word_docx(current_role_name, res)
                     st.download_button(
                         label="💾 TẢI BẢN WORD (.docx)",
@@ -265,7 +263,6 @@ elif menu == "🤖 Phòng Họp Chiến Lược":
                         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                         key=f"dl_{len(st.session_state.messages)}"
                     )
-                    
                 except Exception as e: st.error(str(e))
             else: st.error("AI Offline")
 
