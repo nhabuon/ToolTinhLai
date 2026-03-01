@@ -31,7 +31,7 @@ try:
         AI_STATUS = "Online 🟢"
 except: pass
 
-MODEL_NAME = "gemini-3-pro-preview"
+MODEL_NAME = "gemini-3.1-pro-preview"
 DB_FILE = "shopee_data_v3.db"
 
 # ==================================================
@@ -340,3 +340,4 @@ elif menu == "📦 Kho Hàng & Backup":
         st.markdown("---")
         st.dataframe(df, use_container_width=True)
     else: st.warning("Kho đang trống.")
+
